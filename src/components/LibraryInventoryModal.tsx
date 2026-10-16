@@ -16,6 +16,12 @@ import {
   Port,
   TrunkCapacityFO,
 } from '../types/telecom';
+import {
+  CALEPINAGE_COLUMNS,
+  CALEPINAGE_ROWS,
+  tileToWorldPosition,
+  worldPositionToTile,
+} from '../utils/calepinageUtils';
 
 interface LibraryInventoryModalProps {
   site: TelecomSite;
@@ -50,6 +56,8 @@ export const LibraryInventoryModal: React.FC<LibraryInventoryModalProps> = ({
   const [newRackRoomId, setNewRackRoomId] = useState<string>(site.rooms[1].id);
   const [newRackName, setNewRackName] = useState<string>('');
   const [newRackCode, setNewRackCode] = useState<string>('');
+  const [newRackCol, setNewRackCol] = useState<string>('E');
+  const [newRackRow, setNewRackRow] = useState<number>(3);
 
   // New Library Model State
   const [modName, setModName] = useState<string>('');
@@ -101,8 +109,8 @@ export const LibraryInventoryModal: React.FC<LibraryInventoryModalProps> = ({
     e.preventDefault();
     if (!newRackName.trim()) return;
     const room = site.rooms.find((r) => r.id === newRackRoomId) || site.rooms[0];
-    const roomRacks = site.racks.filter((r) => r.roomId === room.id);
-    const zOffset = (roomRacks.length % 2 === 0 ? -1 : 1) * (1.8 + roomRacks.length * 0.6);
+    const pos3D = tileToWorldPosition(room, newRackCol, newRackRow);
+    const tileInfo = worldPositionToTile(room, pos3D);
 
     const newRack: Rack = {
       id: `rack-custom-${Date.now()}`,
@@ -110,20 +118,39 @@ export const LibraryInventoryModal: React.FC<LibraryInventoryModalProps> = ({
       name: newRackName.trim(),
       code: newRackCode.trim() || `BAIE-${site.racks.length + 1}`,
       uTotal: 42,
-      position3D: [
-        room.bounds.x + (roomRacks.length > 1 ? 1.1 : -1.1),
-        0,
-        Math.max(-2.8, Math.min(2.8, zOffset)),
-      ],
+      position3D: pos3D,
       rotationY: 0,
-      widthM: 0.8,
-      depthM: 1.0,
+      widthM: 0.6,
+      depthM: 0.6,
       heightM: 2.1,
+      calepinage: {
+        rowLabel: tileInfo.suggestedRowLabel,
+        positionInRow: tileInfo.suggestedPosInRow,
+        zoneLabel: `Zone ${room.code}`,
+        tileColumn: tileInfo.tileColumn,
+        tileRow: tileInfo.tileRow,
+        tileRangeLabel: tileInfo.tileRangeLabel,
+        footprintMm: '600 × 600 mm (1 Dalle entière 60×60 cm — Sans demi-baie)',
+        aisleType:
+          room.type === 'mmr'
+            ? 'Couloir Confiné MMR (Avant Cross-Connect / Arrière Rocades)'
+            : 'Allée Centrale de Brassage (Accès Baie Avant)',
+        orientationLabel: tileInfo.orientationLabel,
+        frontFaceLabel: tileInfo.frontFaceLabel,
+        rearFaceLabel: tileInfo.rearFaceLabel,
+        maxFloorLoadKg: 1000,
+        allocatedPowerKw: 4.5,
+      },
       customAttributes: [
         {
-          id: `rk-attr-${Date.now()}`,
+          id: `rk-attr-${Date.now()}-1`,
           key: 'Standard Optique',
           value: '100% Monomode OS2',
+        },
+        {
+          id: `rk-attr-${Date.now()}-2`,
+          key: 'Calepinage 60×60 cm',
+          value: `1 Baie = 1 Dalle entière ${tileInfo.tileRangeLabel} (Zéro demi-baie)`,
         },
       ],
     };
@@ -608,11 +635,46 @@ export const LibraryInventoryModal: React.FC<LibraryInventoryModalProps> = ({
                   />
                 </div>
 
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs text-slate-300 mb-1">
+                      Calepinage : Colonne Dalle (A..H)
+                    </label>
+                    <select
+                      value={newRackCol}
+                      onChange={(e) => setNewRackCol(e.target.value)}
+                      className="w-full px-3 py-2 text-xs font-mono bg-slate-900 border border-slate-700 rounded-lg text-amber-300"
+                    >
+                      {CALEPINAGE_COLUMNS.map((c) => (
+                        <option key={c} value={c}>
+                          Colonne {c}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-300 mb-1">
+                      Calepinage : Ligne Dalle (01..10)
+                    </label>
+                    <select
+                      value={newRackRow}
+                      onChange={(e) => setNewRackRow(Number(e.target.value))}
+                      className="w-full px-3 py-2 text-xs font-mono bg-slate-900 border border-slate-700 rounded-lg text-amber-300"
+                    >
+                      {CALEPINAGE_ROWS.map((r) => (
+                        <option key={r} value={r}>
+                          Ligne {String(r).padStart(2, '0')}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
                 <button
                   type="submit"
                   className="w-full py-2.5 px-4 bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold text-xs rounded-lg transition-colors"
                 >
-                  Ajouter la Baie 42U dans la Scène 3D
+                  Ajouter la Baie 42U sur la Dalle {newRackCol}-{String(newRackRow).padStart(2, '0')}
                 </button>
               </form>
             </div>

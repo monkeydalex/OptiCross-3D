@@ -60,15 +60,14 @@ export function generateTechnicalSvgDocument(
   site.racks.forEach((rk) => {
     const cx = mapX(rk.position3D[0]);
     const cz = mapZ(rk.position3D[2]);
-    const rw = 102;
-    const rh = 54;
-    const eqCount = site.equipments.filter((e) => e.rackId === rk.id).length;
+    const rw = 108;
+    const rh = 56;
     racksSvg += `
       <g>
         <rect x="${cx - rw / 2}" y="${cz - rh / 2}" width="${rw}" height="${rh}" rx="4" fill="#1e293b" stroke="#64748b" stroke-width="1.5" />
-        <text x="${cx}" y="${cz - 6}" text-anchor="middle" fill="#f8fafc" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600">${escapeXml(rk.code)}</text>
-        <text x="${cx}" y="${cz + 10}" text-anchor="middle" fill="#94a3b8" font-family="Plus Jakarta Sans, sans-serif" font-size="9">${escapeXml(rk.name.slice(0, 20))}</text>
-        <text x="${cx}" y="${cz + 22}" text-anchor="middle" fill="#38bdf8" font-family="IBM Plex Mono, monospace" font-size="9">OS2 · ${eqCount} Équip.</text>
+        <text x="${cx}" y="${cz - 8}" text-anchor="middle" fill="#f8fafc" font-family="IBM Plex Mono, monospace" font-size="10.5" font-weight="600">${escapeXml(rk.code)}</text>
+        <text x="${cx}" y="${cz + 6}" text-anchor="middle" fill="#38bdf8" font-family="IBM Plex Mono, monospace" font-size="9" font-weight="600">${escapeXml(rk.calepinage.tileRangeLabel)}</text>
+        <text x="${cx}" y="${cz + 19}" text-anchor="middle" fill="#94a3b8" font-family="Plus Jakarta Sans, sans-serif" font-size="8.5">${escapeXml(rk.calepinage.rowLabel.slice(0, 14))} · ${escapeXml(rk.calepinage.positionInRow)}</text>
       </g>
     `;
   });
@@ -352,15 +351,19 @@ export function downloadPdfEngineeringReport(
 
       doc.setTextColor(245, 158, 11);
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(7.5);
-      doc.text(rk.code, rx + 2.5, ry + 5.5);
+      doc.setFontSize(7.2);
+      doc.text(`${rk.code} (${rk.calepinage.tileColumn}-${String(rk.calepinage.tileRow).padStart(2, '0')})`, rx + 2, ry + 5);
+
+      doc.setTextColor(56, 189, 248);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(6.2);
+      doc.text(`${rk.calepinage.rowLabel.slice(0, 14)} · ${rk.calepinage.positionInRow}`, rx + 2, ry + 9.5);
 
       const eqs = site.equipments.filter((e) => e.rackId === rk.id);
       doc.setTextColor(203, 213, 225);
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(6.5);
+      doc.setFontSize(6);
       eqs.slice(0, 2).forEach((eq, eIdx) => {
-        doc.text(`U${eq.uPosition}: ${eq.code.slice(0, 16)}`, rx + 2.5, ry + 11 + eIdx * 4.5);
+        doc.text(`U${eq.uPosition}: ${eq.code.slice(0, 15)}`, rx + 2, ry + 14 + eIdx * 4);
       });
     });
   });

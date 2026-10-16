@@ -20,7 +20,16 @@ import {
   PortStatus,
   PolarityMode,
   TrunkCapacityFO,
+  AisleType,
+  RackFootprintMm,
 } from '../types/telecom';
+import {
+  CALEPINAGE_COLUMNS,
+  CALEPINAGE_ROWS,
+  relocateRackToTile,
+  worldPositionToTile,
+  flipRackFrontRearOrientation,
+} from '../utils/calepinageUtils';
 
 interface EntityEditorDrawerProps {
   site: TelecomSite;
@@ -568,9 +577,9 @@ export const EntityEditorDrawer: React.FC<EntityEditorDrawerProps> = ({
         )}
 
         {currentRef.kind === 'rack' && rackObj && (
-          <div className="space-y-3">
+          <div className="space-y-4">
             <h3 className="text-xs font-bold uppercase tracking-wider text-sky-400">
-              Paramètres de la Baie Télécom
+              Identification de la Baie Télécom
             </h3>
             <div>
               <label className="block text-xs text-slate-300 mb-1">Nom de la Baie</label>
@@ -620,6 +629,347 @@ export const EntityEditorDrawer: React.FC<EntityEditorDrawerProps> = ({
                   }
                   className="w-full px-3 py-2 text-xs font-mono bg-slate-950 border border-slate-700 rounded-lg text-slate-100"
                 />
+              </div>
+            </div>
+
+            {/* CALEPINAGE 60x60cm (1 BAIE = 1 DALLE ENTIÈRE — ZÉRO DEMI-BAIE) & BAIE AVANT / ARRIÈRE */}
+            <div className="pt-3 border-t border-slate-800 space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-amber-400">
+                  Calepinage 60×60 cm (1 Baie = 1 Dalle)
+                </h4>
+                <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/40">
+                  {rackObj.calepinage.tileRangeLabel}
+                </span>
+              </div>
+
+              <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-semibold text-slate-200">
+                    Orientation Baie Avant / Baie Arrière
+                  </span>
+                  <button
+                    onClick={() =>
+                      onUpdateSite((prev) => ({
+                        ...prev,
+                        racks: prev.racks.map((rk) =>
+                          rk.id === rackObj.id ? flipRackFrontRearOrientation(rk) : rk
+                        ),
+                      }))
+                    }
+                    className="px-2.5 py-1 text-[11px] font-semibold bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded transition-colors"
+                  >
+                    Inverser Avant / Arrière (180°)
+                  </button>
+                </div>
+                <div className="text-[11px] text-amber-300 font-mono">
+                  ▼ {rackObj.calepinage.frontFaceLabel}
+                </div>
+                <div className="text-[11px] text-sky-400 font-mono">
+                  ▲ {rackObj.calepinage.rearFaceLabel}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-slate-300 mb-1">
+                    Colonne Dalle 60×60 (A à F)
+                  </label>
+                  <select
+                    value={rackObj.calepinage.tileColumn}
+                    onChange={(e) => {
+                      const newCol = e.target.value;
+                      onUpdateSite((prev) => {
+                        const rm = prev.rooms.find((r) => r.id === rackObj.roomId);
+                        if (!rm) return prev;
+                        return {
+                          ...prev,
+                          racks: prev.racks.map((rk) =>
+                            rk.id === rackObj.id
+                              ? relocateRackToTile(rk, rm, newCol, rk.calepinage.tileRow)
+                              : rk
+                          ),
+                        };
+                      });
+                    }}
+                    className="w-full px-3 py-2 text-xs font-mono bg-slate-950 border border-slate-700 rounded-lg text-amber-300"
+                  >
+                    {CALEPINAGE_COLUMNS.map((col) => (
+                      <option key={col} value={col}>
+                        Colonne Dalle {col} (60 cm)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-slate-300 mb-1">
+                    Ligne Dalle 60×60 (01 à 06)
+                  </label>
+                  <select
+                    value={rackObj.calepinage.tileRow}
+                    onChange={(e) => {
+                      const newRow = Number(e.target.value);
+                      onUpdateSite((prev) => {
+                        const rm = prev.rooms.find((r) => r.id === rackObj.roomId);
+                        if (!rm) return prev;
+                        return {
+                          ...prev,
+                          racks: prev.racks.map((rk) =>
+                            rk.id === rackObj.id
+                              ? relocateRackToTile(rk, rm, rk.calepinage.tileColumn, newRow)
+                              : rk
+                          ),
+                        };
+                      });
+                    }}
+                    className="w-full px-3 py-2 text-xs font-mono bg-slate-950 border border-slate-700 rounded-lg text-amber-300"
+                  >
+                    {CALEPINAGE_ROWS.map((rNum) => (
+                      <option key={rNum} value={rNum}>
+                        Ligne Dalle {String(rNum).padStart(2, '0')} (60 cm)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-slate-300 mb-1">
+                    Rangée / Allée
+                  </label>
+                  <input
+                    type="text"
+                    value={rackObj.calepinage.rowLabel}
+                    onChange={(e) =>
+                      onUpdateSite((prev) => ({
+                        ...prev,
+                        racks: prev.racks.map((rk) =>
+                          rk.id === rackObj.id
+                            ? {
+                                ...rk,
+                                calepinage: { ...rk.calepinage, rowLabel: e.target.value },
+                              }
+                            : rk
+                        ),
+                      }))
+                    }
+                    className="w-full px-3 py-2 text-xs bg-slate-950 border border-slate-700 rounded-lg text-slate-100"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-slate-300 mb-1">
+                    Position dans la Rangée
+                  </label>
+                  <input
+                    type="text"
+                    value={rackObj.calepinage.positionInRow}
+                    onChange={(e) =>
+                      onUpdateSite((prev) => ({
+                        ...prev,
+                        racks: prev.racks.map((rk) =>
+                          rk.id === rackObj.id
+                            ? {
+                                ...rk,
+                                calepinage: {
+                                  ...rk.calepinage,
+                                  positionInRow: e.target.value,
+                                },
+                              }
+                            : rk
+                        ),
+                      }))
+                    }
+                    className="w-full px-3 py-2 text-xs font-mono bg-slate-950 border border-slate-700 rounded-lg text-slate-100"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-slate-300 mb-1">
+                    Dimension Standard (Sans demi-baie)
+                  </label>
+                  <select
+                    value={rackObj.calepinage.footprintMm}
+                    onChange={(e) =>
+                      onUpdateSite((prev) => ({
+                        ...prev,
+                        racks: prev.racks.map((rk) =>
+                          rk.id === rackObj.id
+                            ? {
+                                ...rk,
+                                calepinage: {
+                                  ...rk.calepinage,
+                                  footprintMm: e.target.value as RackFootprintMm,
+                                },
+                              }
+                            : rk
+                        ),
+                      }))
+                    }
+                    className="w-full px-3 py-2 text-xs font-mono bg-slate-950 border border-slate-700 rounded-lg text-slate-100"
+                  >
+                    <option value="600 × 600 mm (1 Dalle entière 60×60 cm — Sans demi-baie)">
+                      600 × 600 mm (1 Dalle entière 60×60 cm)
+                    </option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs text-slate-300 mb-1">
+                    Organisation Couloirs Avant / Arrière
+                  </label>
+                  <select
+                    value={rackObj.calepinage.aisleType}
+                    onChange={(e) =>
+                      onUpdateSite((prev) => ({
+                        ...prev,
+                        racks: prev.racks.map((rk) =>
+                          rk.id === rackObj.id
+                            ? {
+                                ...rk,
+                                calepinage: {
+                                  ...rk.calepinage,
+                                  aisleType: e.target.value as AisleType,
+                                },
+                              }
+                            : rk
+                        ),
+                      }))
+                    }
+                    className="w-full px-3 py-2 text-xs bg-slate-950 border border-slate-700 rounded-lg text-slate-100"
+                  >
+                    <option value="Allée Centrale de Brassage (Accès Baie Avant)">
+                      Allée Centrale de Brassage (Accès Baie Avant)
+                    </option>
+                    <option value="Couloir Arrière Rocades (Accès Baie Arrière)">
+                      Couloir Arrière Rocades (Accès Baie Arrière)
+                    </option>
+                    <option value="Couloir Confiné MMR (Avant Cross-Connect / Arrière Rocades)">
+                      Couloir Confiné MMR (Avant / Arrière)
+                    </option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs text-slate-300 mb-1">
+                  Îlot / Zone ou Cage Colocation
+                </label>
+                <input
+                  type="text"
+                  value={rackObj.calepinage.zoneLabel}
+                  onChange={(e) =>
+                    onUpdateSite((prev) => ({
+                      ...prev,
+                      racks: prev.racks.map((rk) =>
+                        rk.id === rackObj.id
+                          ? {
+                              ...rk,
+                              calepinage: { ...rk.calepinage, zoneLabel: e.target.value },
+                            }
+                          : rk
+                      ),
+                    }))
+                  }
+                  className="w-full px-3 py-2 text-xs bg-slate-950 border border-slate-700 rounded-lg text-slate-100"
+                />
+              </div>
+
+              {/* Fine 3D X/Z Sliders */}
+              <div className="grid grid-cols-2 gap-3 pt-1">
+                <div>
+                  <label className="block text-[11px] font-mono text-slate-400 mb-1">
+                    Coord 3D X : {rackObj.position3D[0].toFixed(2)} m
+                  </label>
+                  <input
+                    type="range"
+                    min={-10}
+                    max={10}
+                    step={0.1}
+                    value={rackObj.position3D[0]}
+                    onChange={(e) => {
+                      const newX = Number(e.target.value);
+                      onUpdateSite((prev) => {
+                        const rm = prev.rooms.find((r) => r.id === rackObj.roomId);
+                        return {
+                          ...prev,
+                          racks: prev.racks.map((rk) => {
+                            if (rk.id !== rackObj.id) return rk;
+                            const nextPos: [number, number, number] = [
+                              newX,
+                              rk.position3D[1],
+                              rk.position3D[2],
+                            ];
+                            const tileInfo = rm
+                              ? worldPositionToTile(rm, nextPos)
+                              : null;
+                            return {
+                              ...rk,
+                              position3D: nextPos,
+                              calepinage: tileInfo
+                                ? {
+                                    ...rk.calepinage,
+                                    tileColumn: tileInfo.tileColumn,
+                                    tileRow: tileInfo.tileRow,
+                                    tileRangeLabel: tileInfo.tileRangeLabel,
+                                  }
+                                : rk.calepinage,
+                            };
+                          }),
+                        };
+                      });
+                    }}
+                    className="w-full accent-amber-500 cursor-pointer"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-mono text-slate-400 mb-1">
+                    Coord 3D Z : {rackObj.position3D[2].toFixed(2)} m
+                  </label>
+                  <input
+                    type="range"
+                    min={-3.5}
+                    max={3.5}
+                    step={0.1}
+                    value={rackObj.position3D[2]}
+                    onChange={(e) => {
+                      const newZ = Number(e.target.value);
+                      onUpdateSite((prev) => {
+                        const rm = prev.rooms.find((r) => r.id === rackObj.roomId);
+                        return {
+                          ...prev,
+                          racks: prev.racks.map((rk) => {
+                            if (rk.id !== rackObj.id) return rk;
+                            const nextPos: [number, number, number] = [
+                              rk.position3D[0],
+                              rk.position3D[1],
+                              newZ,
+                            ];
+                            const tileInfo = rm
+                              ? worldPositionToTile(rm, nextPos)
+                              : null;
+                            return {
+                              ...rk,
+                              position3D: nextPos,
+                              calepinage: tileInfo
+                                ? {
+                                    ...rk.calepinage,
+                                    tileColumn: tileInfo.tileColumn,
+                                    tileRow: tileInfo.tileRow,
+                                    tileRangeLabel: tileInfo.tileRangeLabel,
+                                  }
+                                : rk.calepinage,
+                            };
+                          }),
+                        };
+                      });
+                    }}
+                    className="w-full accent-amber-500 cursor-pointer"
+                  />
+                </div>
               </div>
             </div>
           </div>

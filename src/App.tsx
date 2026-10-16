@@ -8,6 +8,11 @@ import {
   Sliders,
   Layers,
   FileDown,
+  Grid3X3,
+  Unplug,
+  CheckCircle2,
+  AlertTriangle,
+  X,
 } from 'lucide-react';
 import {
   INITIAL_TELECOM_SITE,
@@ -28,10 +33,18 @@ import {
   traceEndToEndChainFromPortOrFiber,
 } from './utils/opticalCalculations';
 import {
+  relocateRackToTile,
+  flipRackFrontRearOrientation,
+} from './utils/calepinageUtils';
+import {
   ThreeSceneViewport,
   CameraPreset,
+  RackFocusRequest,
 } from './components/ThreeSceneViewport';
-import { Interactive2DPlanModal } from './components/Interactive2DPlanModal';
+import {
+  Interactive2DPlanModal,
+  PlanModalTab,
+} from './components/Interactive2DPlanModal';
 import { PatchingSimulatorDrawer } from './components/PatchingSimulatorDrawer';
 import { LibraryInventoryModal } from './components/LibraryInventoryModal';
 import { EntityEditorDrawer } from './components/EntityEditorDrawer';
@@ -67,12 +80,23 @@ export default function App() {
   const [dockCollapsed, setDockCollapsed] = useState<boolean>(false);
 
   const [activeOverlay, setActiveOverlay] = useState<ActiveOverlay>('none');
+  const [planModalTab, setPlanModalTab] = useState<PlanModalTab>('logical_physical');
 
   const [isPatchingMode, setIsPatchingMode] = useState<boolean>(false);
   const [patchingDraftSource, setPatchingDraftSource] = useState<{
     equipmentId: string;
     portId: string;
   } | null>(null);
+  const [inspectedPort3D, setInspectedPort3D] = useState<{
+    equipmentId: string;
+    portId: string;
+  } | null>(null);
+  const [patchingBannerMsg, setPatchingBannerMsg] = useState<{
+    text: string;
+    tone: 'success' | 'warning';
+  } | null>(null);
+  const [rackFocusRequest, setRackFocusRequest] =
+    useState<RackFocusRequest | null>(null);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -138,23 +162,49 @@ export default function App() {
     }
   };
 
-  // Direct 3D port click handler for interactive cabling simulation
+  // Direct 3D port click handler: protects occupied ports & allows 1-click clean disconnect or 2-step patching
   const handlePortClickForPatching = (equipmentId: string, portId: string) => {
-    if (!patchingDraftSource) {
-      setPatchingDraftSource({ equipmentId, portId });
-      setActiveOverlay('patching');
+    const clickedEq = site.equipments.find((e) => e.id === equipmentId);
+    const clickedPort = clickedEq?.ports.find((p) => p.id === portId);
+    if (!clickedEq || !clickedPort) return;
+
+    // 1. If the clicked port is ALREADY CONNECTED -> Never overwrite it! Open the 3D Clean Disconnect Card
+    if (clickedPort.status === 'connected') {
+      setInspectedPort3D({ equipmentId, portId });
+      setSelectedEntity({ kind: 'port', id: portId, equipmentId });
+      if (patchingDraftSource) {
+        setPatchingBannerMsg({
+          text: `Action bloquée : ${clickedEq.code} (${clickedPort.label}) est déjà occupé. Débranchez-le d'abord ou cliquez sur un port LIBRE (vert).`,
+          tone: 'warning',
+        });
+      }
       return;
     }
 
+    // 2. The clicked port is FREE -> Proceed with 2-Step 3D Patching
+    setInspectedPort3D(null);
+    setIsPatchingMode(true);
+
+    if (!patchingDraftSource) {
+      setPatchingDraftSource({ equipmentId, portId });
+      setPatchingBannerMsg({
+        text: `Étape 1/2 : Départ sélectionné sur ${clickedEq.code} (${clickedPort.label}). Cliquez maintenant sur un second port LIBRE en 3D pour raccorder.`,
+        tone: 'success',
+      });
+      return;
+    }
+
+    // Clicking the same source port again cancels the selection
     if (patchingDraftSource.portId === portId) {
       setPatchingDraftSource(null);
+      setPatchingBannerMsg(null);
       return;
     }
 
     const srcEq = site.equipments.find(
       (e) => e.id === patchingDraftSource.equipmentId
     );
-    const dstEq = site.equipments.find((e) => e.id === equipmentId);
+    const dstEq = clickedEq;
     if (!srcEq || !dstEq) return;
 
     const srcRack = site.racks.find((r) => r.id === srcEq.rackId);
@@ -163,14 +213,31 @@ export default function App() {
     const dstRoom = site.rooms.find((rm) => rm.id === dstRack?.roomId);
 
     const srcPort = srcEq.ports.find((p) => p.id === patchingDraftSource.portId);
-    const dstPort = dstEq.ports.find((p) => p.id === portId);
+    const dstPort = clickedPort;
     if (!srcPort || !dstPort) return;
+
+    // Double-check neither port is occupied
+    if (srcPort.status === 'connected' || dstPort.status === 'connected') {
+      setPatchingBannerMsg({
+        text: 'Impossible de brasser sur un port déjà occupé. Débranchez-le proprement avant.',
+        tone: 'warning',
+      });
+      return;
+    }
 
     const isSameRoom = srcRoom?.id === dstRoom?.id;
     const isMmr = srcRoom?.type === 'mmr' && dstRoom?.type === 'mmr';
     const codeNum = String(site.fibers.length + 1).padStart(3, '0');
 
-    // If same room -> Jarretière Optique (or Cross-Connect MMR if inside MMR); if different rooms -> Câble Rocade deployed by Hébergeur
+    // Enforce Telecom Rule: If different rooms, it must involve MMR as a Câble Rocade; if same room, Jarretière
+    if (!isSameRoom && srcRoom?.type !== 'mmr' && dstRoom?.type !== 'mmr') {
+      setPatchingBannerMsg({
+        text: `Règle Télécom : Impossible de relier directement ${srcRoom?.code} à ${dstRoom?.code} sans passer par la Salle MMR (Hébergeur Tiers).`,
+        tone: 'warning',
+      });
+      return;
+    }
+
     const kind: FiberConnection['kind'] = !isSameRoom
       ? 'trunk_cable'
       : isMmr && srcRack?.id !== dstRack?.id
@@ -232,6 +299,10 @@ export default function App() {
 
     handleAddFiber(newFiber, selectedCrossConnectId);
     setPatchingDraftSource(null);
+    setPatchingBannerMsg({
+      text: `Brassage 3D créé avec succès : ${newFiber.code} (${srcEq.code} ${srcPort.label} → ${dstEq.code} ${dstPort.label})`,
+      tone: 'success',
+    });
   };
 
   const handleAddFiber = (
@@ -264,6 +335,7 @@ export default function App() {
   };
 
   const handleRemoveFiber = (fiberId: string) => {
+    const removedFib = site.fibers.find((f) => f.id === fiberId);
     setSite((prev) => {
       const updatedFibers = prev.fibers.filter((f) => f.id !== fiberId);
       const updatedXcs = prev.crossConnects.map((xc) => ({
@@ -276,6 +348,13 @@ export default function App() {
         crossConnects: updatedXcs,
       });
     });
+    setInspectedPort3D(null);
+    if (removedFib) {
+      setPatchingBannerMsg({
+        text: `Liaison ${removedFib.code} débranchée proprement — Les 2 ports optiques sont désormais LIBRES.`,
+        tone: 'success',
+      });
+    }
   };
 
   const handleAddCrossConnect = (newXc: EndToEndCrossConnect) => {
@@ -387,6 +466,41 @@ export default function App() {
     }));
   };
 
+  const handleRelocateRack = (
+    rackId: string,
+    tileColumn: string,
+    tileRow: number
+  ) => {
+    setSite((prev) => {
+      const targetRack = prev.racks.find((r) => r.id === rackId);
+      if (!targetRack) return prev;
+      const room = prev.rooms.find((rm) => rm.id === targetRack.roomId);
+      if (!room) return prev;
+
+      return {
+        ...prev,
+        racks: prev.racks.map((rk) =>
+          rk.id === rackId
+            ? relocateRackToTile(rk, room, tileColumn, tileRow)
+            : rk
+        ),
+      };
+    });
+  };
+
+  const handleFlipRackOrientation = (rackId: string) => {
+    setSite((prev) => ({
+      ...prev,
+      racks: prev.racks.map((rk) =>
+        rk.id === rackId ? flipRackFrontRearOrientation(rk) : rk
+      ),
+    }));
+  };
+
+  const handleFocusRack3D = (rackId: string, side: 'front' | 'rear') => {
+    setRackFocusRequest({ rackId, side, timestamp: Date.now() });
+  };
+
   return (
     <div className="relative w-screen h-screen flex flex-col bg-slate-950 text-slate-100 overflow-hidden select-none">
       {/* ===================================================================== */}
@@ -426,6 +540,7 @@ export default function App() {
             href="#plan-2d"
             onClick={(e) => {
               e.preventDefault();
+              setPlanModalTab('logical_physical');
               setActiveOverlay(activeOverlay === 'plan_2d' ? 'none' : 'plan_2d');
             }}
             className={`hover:text-white transition-colors whitespace-nowrap shrink-0 py-1 border-b-2 ${
@@ -434,7 +549,7 @@ export default function App() {
                 : 'border-transparent'
             }`}
           >
-            Plan 2D &amp; Schémas
+            Plan 2D &amp; Calepinage
           </a>
           <a
             href="#brassage"
@@ -545,10 +660,11 @@ export default function App() {
           patchingDraftSource={patchingDraftSource}
           onPortClickForPatching={handlePortClickForPatching}
           isPatchingMode={isPatchingMode}
+          rackFocusRequest={rackFocusRequest}
         />
 
-        {/* Top-Left Spec & Architecture Summary Card */}
-        <div className="pointer-events-auto absolute top-4 left-6 z-20 bg-slate-900/95 border border-slate-800 rounded-xl px-4 py-3 shadow-xl max-w-xl">
+        {/* Top-Left Spec, 3D Patching Assistant & Quick Port Disconnect Card */}
+        <div className="pointer-events-auto absolute top-4 left-6 z-20 bg-slate-900/95 border border-slate-800 rounded-xl px-4 py-3 shadow-xl max-w-xl space-y-2">
           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300">
             <span className="font-semibold text-slate-100">
               Baie SFR (Câble 24FO)
@@ -563,7 +679,7 @@ export default function App() {
             </span>
           </div>
 
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-mono tabular-nums">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-mono tabular-nums">
             <span className="text-amber-400 font-semibold">
               {activeOpticalBudget.title}
             </span>
@@ -587,21 +703,126 @@ export default function App() {
             </span>
           </div>
 
+          {/* 3D Connected Port Quick-Disconnect Card (When user clicks an occupied port in 3D) */}
+          {inspectedPort3D && (() => {
+            const eq = site.equipments.find((e) => e.id === inspectedPort3D.equipmentId);
+            const port = eq?.ports.find((p) => p.id === inspectedPort3D.portId);
+            const fib = port?.connectedFiberId
+              ? site.fibers.find((f) => f.id === port.connectedFiberId)
+              : undefined;
+            if (!eq || !port || !fib) return null;
+
+            return (
+              <div className="pt-2 border-t border-slate-800 bg-amber-950/30 -mx-2 px-3 py-2.5 rounded-lg border border-amber-500/40 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs font-bold text-amber-300">
+                    Port Occupé sélectionné : {eq.code} · {port.label}
+                  </div>
+                  <button
+                    onClick={() => setInspectedPort3D(null)}
+                    className="text-slate-400 hover:text-white"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <div className="text-[11px] text-slate-300">
+                  Relié par <strong className="text-white font-mono">{fib.code}</strong> ({fib.name})
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => handleRemoveFiber(fib.id)}
+                    className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 transition-colors"
+                  >
+                    <Unplug className="w-3.5 h-3.5" />
+                    Débrancher proprement ce port
+                  </button>
+                  <button
+                    onClick={() => {
+                      const chain = traceEndToEndChainFromPortOrFiber(site, fib.id, port.id);
+                      if (chain.length > 0) setCustomTracedFiberIds(chain);
+                    }}
+                    className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-sky-300 text-xs font-medium rounded-lg border border-slate-700"
+                  >
+                    Tracer la liaison
+                  </button>
+                  <button
+                    onClick={() => setActiveOverlay('patching')}
+                    className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-lg border border-slate-700"
+                  >
+                    Ouvrir l&apos;Atelier de Brassage
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Interactive 3D Patching Step-by-Step Assistant */}
           {isPatchingMode && (
-            <div className="mt-2 pt-2 border-t border-slate-800 flex items-center justify-between text-xs text-amber-300">
-              <span>
-                {patchingDraftSource
-                  ? `Port Origine sélectionné (${patchingDraftSource.portId}) — Cliquez sur le Port Destination en 3D`
-                  : 'Mode Brassage 3D Actif : Cliquez sur un port optique de départ dans la scène 3D'}
-              </span>
+            <div className="pt-2 border-t border-slate-800 space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-bold text-amber-400">
+                  {patchingDraftSource
+                    ? `Assistant Brassage 3D (Étape 2/2) — Port Départ : ${patchingDraftSource.portId}`
+                    : 'Assistant Brassage 3D (Étape 1/2) — Cliquez sur un port LIBRE (Cyan) en 3D'}
+                </span>
+                <div className="flex items-center gap-2">
+                  {patchingDraftSource && (
+                    <button
+                      onClick={() => setPatchingDraftSource(null)}
+                      className="text-rose-400 hover:underline text-[11px]"
+                    >
+                      Changer départ
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setIsPatchingMode(false);
+                      setPatchingDraftSource(null);
+                      setPatchingBannerMsg(null);
+                    }}
+                    className="text-slate-400 hover:text-white underline text-[11px]"
+                  >
+                    Quitter
+                  </button>
+                </div>
+              </div>
+
+              <div className="text-[11px] text-slate-300">
+                {patchingDraftSource ? (
+                  <span>
+                    Cliquez sur un second port <strong className="text-emerald-400">LIBRE (Vert = Même salle · Cyan = MMR)</strong> en 3D pour tirer la fibre, ou cliquez sur un port <strong className="text-amber-400">Occupé</strong> pour le débrancher.
+                  </span>
+                ) : (
+                  <span>
+                    Les ports <strong className="text-sky-400">LIBRES brillent en Cyan</strong> sur les façades des baies 3D. Cliquez sur un port occupé (Vert/Ambre) si vous souhaitez le <strong>débrancher proprement</strong>.
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Feedback Toast inside Top-Left Card */}
+          {patchingBannerMsg && (
+            <div
+              className={`p-2 rounded-lg border text-xs flex items-center justify-between gap-2 ${
+                patchingBannerMsg.tone === 'warning'
+                  ? 'bg-rose-950/60 border-rose-500/60 text-rose-200'
+                  : 'bg-emerald-950/50 border-emerald-500/50 text-emerald-200'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                {patchingBannerMsg.tone === 'warning' ? (
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                ) : (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                )}
+                <span>{patchingBannerMsg.text}</span>
+              </div>
               <button
-                onClick={() => {
-                  setIsPatchingMode(false);
-                  setPatchingDraftSource(null);
-                }}
-                className="ml-3 text-slate-400 hover:text-white underline"
+                onClick={() => setPatchingBannerMsg(null)}
+                className="text-slate-400 hover:text-white"
               >
-                Quitter
+                <X className="w-3.5 h-3.5" />
               </button>
             </div>
           )}
@@ -751,6 +972,17 @@ export default function App() {
 
                   <button
                     onClick={() => {
+                      setPlanModalTab('calepinage_grid');
+                      setActiveOverlay('plan_2d');
+                    }}
+                    className="px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 rounded-lg transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5"
+                  >
+                    <Grid3X3 className="w-3.5 h-3.5 text-amber-400" />
+                    Calepinage Dalles
+                  </button>
+
+                  <button
+                    onClick={() => {
                       setIsPatchingMode(!isPatchingMode);
                       if (!isPatchingMode) setActiveOverlay('patching');
                     }}
@@ -790,6 +1022,7 @@ export default function App() {
             budget={activeOpticalBudget}
             highlightedFiberIds={highlightedFiberIds}
             selectedCrossConnectId={selectedCrossConnectId}
+            initialTab={planModalTab}
             onSelectCrossConnect={(xcId) => {
               setCustomTracedFiberIds(null);
               setSelectedCrossConnectId(xcId);
@@ -798,6 +1031,9 @@ export default function App() {
               setSelectedEntity(ent);
               setActiveOverlay('editor');
             }}
+            onRelocateRack={handleRelocateRack}
+            onFlipRackOrientation={handleFlipRackOrientation}
+            onFocusRack3D={handleFocusRack3D}
             onClose={() => setActiveOverlay('none')}
           />
         )}
@@ -809,7 +1045,7 @@ export default function App() {
             onRemoveFiber={handleRemoveFiber}
             onAddCrossConnect={handleAddCrossConnect}
             patchingDraftSource={patchingDraftSource}
-            onClearDraftSource={() => setPatchingDraftSource(null)}
+            onSetDraftSource={setPatchingDraftSource}
             isPatchingMode={isPatchingMode}
             onTogglePatchingMode={setIsPatchingMode}
             selectedCrossConnectId={selectedCrossConnectId}

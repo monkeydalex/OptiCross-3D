@@ -19,6 +19,29 @@ export type PortStatus = 'connected' | 'free' | 'reserved' | 'fault';
 
 export type PortRole = 'front_patch' | 'rear_trunk' | 'transceiver';
 
+export type AisleType =
+  | 'Allée Centrale de Brassage (Accès Baie Avant)'
+  | 'Couloir Arrière Rocades (Accès Baie Arrière)'
+  | 'Couloir Confiné MMR (Avant Cross-Connect / Arrière Rocades)';
+
+export type RackFootprintMm = '600 × 600 mm (1 Dalle entière 60×60 cm — Sans demi-baie)';
+
+export interface RackCalepinage {
+  rowLabel: string;          // ex: "Rangée Nord (Ligne 02)"
+  positionInRow: string;     // ex: "Pos 03 (Dalle C)"
+  zoneLabel: string;         // ex: "Îlot POP Opérateur SFR"
+  tileColumn: string;        // ex: "C" (Axe X Dalle 60x60cm : A à F)
+  tileRow: number;           // ex: 2 (Axe Z Dalle 60x60cm : 01 à 06)
+  tileRangeLabel: string;    // ex: "Dalle C-02 (60×60 cm)" -> 1 Baie = 1 Dalle unique !
+  footprintMm: RackFootprintMm;
+  aisleType: AisleType;
+  orientationLabel: string;  // ex: "Baie Avant au Sud (Allée) · Baie Arrière au Nord (Rocade)"
+  frontFaceLabel: string;    // ex: "Baie Avant (Sud) — Brassage Jarretières OS2"
+  rearFaceLabel: string;     // ex: "Baie Arrière (Nord) — Arrivée Câble Rocade 24FO"
+  maxFloorLoadKg: number;    // ex: 1000
+  allocatedPowerKw: number;  // ex: 4.5
+}
+
 export interface CustomAttribute {
   id: string;
   key: string;
@@ -65,9 +88,10 @@ export interface Rack {
   uTotal: number;
   position3D: [number, number, number];
   rotationY: number;
-  widthM: number;
-  depthM: number;
+  widthM: number;  // 0.60m = 60cm (1 Dalle)
+  depthM: number;  // 0.60m = 60cm (1 Dalle)
   heightM: number;
+  calepinage: RackCalepinage;
   customAttributes: CustomAttribute[];
 }
 
@@ -107,9 +131,9 @@ export interface FiberConnection {
   name: string;
   code: string;
   /**
-   * 'patch_cord' = Jarretière souple intra-salle (Salle Opérateur ou Salle Client, en face avant)
-   * 'cross_connect_jumper' = Jarretière Cross-Connect en Salle MMR (relie les 2 baies MMR lors d'une commande Cross-Connect Mono-Fibre ou Bi-Fibre)
-   * 'trunk_cable' = Câble Fibre Optique / Rocade pré-fibrée (6FO, 12FO, 24FO, 48FO) inter-salles déployé par l'Hébergeur Tiers (arrière des tiroirs)
+   * 'patch_cord' = Jarretière souple intra-salle (branchée en BAIE AVANT)
+   * 'cross_connect_jumper' = Jarretière Cross-Connect en Salle MMR (branchée en BAIE AVANT entre les 2 baies MMR)
+   * 'trunk_cable' = Câble Fibre Optique / Rocade pré-fibrée (6FO, 12FO, 24FO, 48FO) inter-salles (branché en BAIE ARRIÈRE des tiroirs)
    */
   kind: 'patch_cord' | 'trunk_cable' | 'cross_connect_jumper';
   sourceEquipmentId: string;
@@ -118,8 +142,8 @@ export interface FiberConnection {
   targetPortId: string;
   fiberMode: FiberMode;
   polarity: PolarityMode;
-  trunkCapacity?: TrunkCapacityFO; // Only for 'trunk_cable' (6FO, 12FO, 24FO, 48FO)
-  activeStrandsUsed?: string;      // e.g. "FO #01 & FO #02 / 24FO" or "FO #03 / 12FO"
+  trunkCapacity?: TrunkCapacityFO;
+  activeStrandsUsed?: string;
   responsibility: ResponsibilityOwner;
   connectorA: ConnectorType;
   connectorB: ConnectorType;

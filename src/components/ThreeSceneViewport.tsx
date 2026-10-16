@@ -18,6 +18,12 @@ export type CameraPreset =
   | 'room_client'
   | 'mmr_closeup';
 
+export interface RackFocusRequest {
+  rackId: string;
+  side: 'front' | 'rear';
+  timestamp: number;
+}
+
 interface ThreeSceneViewportProps {
   site: TelecomSite;
   selectedEntity: SelectedEntityRef | null;
@@ -31,6 +37,7 @@ interface ThreeSceneViewportProps {
   patchingDraftSource: { equipmentId: string; portId: string } | null;
   onPortClickForPatching: (equipmentId: string, portId: string) => void;
   isPatchingMode: boolean;
+  rackFocusRequest?: RackFocusRequest | null;
 }
 
 interface HoverTooltip {
@@ -60,6 +67,9 @@ interface ExplodablePart {
 
 // Pre-allocated math helpers at module scope (Zero GC in render loop)
 const _vec3A = new THREE.Vector3();
+const _forwardVec = new THREE.Vector3();
+const _rightVec = new THREE.Vector3();
+const _moveVec = new THREE.Vector3();
 
 function createLabelCanvasTexture(
   title: string,
@@ -156,10 +166,14 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
   patchingDraftSource,
   onPortClickForPatching,
   isPatchingMode,
+  rackFocusRequest,
 }) => {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const [hoverTooltip, setHoverTooltip] = useState<HoverTooltip | null>(null);
   const [webglLost, setWebglLost] = useState(false);
+  const [mouseLeftMode, setMouseLeftMode] = useState<'orbit' | 'pan'>('orbit');
+  const [viewSide, setViewSide] = useState<'front' | 'rear'>('front');
+  const pressedKeysRef = useRef<Set<string>>(new Set());
 
   const stateRef = useRef({
     site,
@@ -239,23 +253,114 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
     currentExploded: 0,
   });
 
+  // Switch left-click between Orbit (Rotate) and Pan (Drag floor)
+  useEffect(() => {
+    const controls = sceneObjectsRef.current.controls;
+    if (!controls) return;
+    controls.mouseButtons.LEFT =
+      mouseLeftMode === 'pan' ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE;
+  }, [mouseLeftMode]);
+
+  // Helper to focus a specific rack on either its Baie Avant ('front') or Baie Arrière ('rear')
+  const focusRackSide = (rk: Rack, side: 'front' | 'rear') => {
+    const goal = cameraGoalRef.current;
+    const isFlipped = Math.abs(rk.rotationY) > 0.1;
+    // Standard rack has Avant at +Z and Arrière at -Z
+    const zOffset = (side === 'front' ? 2.6 : -2.6) * (isFlipped ? -1 : 1);
+    goal.pos.set(rk.position3D[0], 1.85, rk.position3D[2] + zOffset);
+    goal.target.set(rk.position3D[0], 1.18, rk.position3D[2]);
+    goal.active = true;
+    setViewSide(side);
+  };
+
+  // Flip camera between Baie Avant (South/+Z) and Baie Arrière (North/-Z)
+  const handleToggleFrontRearSide = (targetSide: 'front' | 'rear') => {
+    setViewSide(targetSide);
+    const goal = cameraGoalRef.current;
+    const { camera, controls } = sceneObjectsRef.current;
+
+    if (selectedEntity?.kind === 'rack') {
+      const rk = site.racks.find((r) => r.id === selectedEntity.id);
+      if (rk) {
+        focusRackSide(rk, targetSide);
+        return;
+      }
+    }
+
+    if (camera && controls) {
+      const curTarget = controls.target.clone();
+      const distZ = Math.max(3.2, Math.abs(camera.position.z - curTarget.z));
+      goal.target.copy(curTarget);
+      goal.pos.set(
+        camera.position.x,
+        Math.max(2.1, camera.position.y),
+        curTarget.z + (targetSide === 'front' ? distZ : -distZ)
+      );
+      goal.active = true;
+    }
+  };
+
+  // Step-nudge camera from On-Screen 3D D-Pad
+  const nudgeCamera3D = (dx: number, dy: number, dz: number, zoomFactor = 1) => {
+    const { camera, controls } = sceneObjectsRef.current;
+    if (!camera || !controls) return;
+    const goal = cameraGoalRef.current;
+
+    camera.getWorldDirection(_forwardVec);
+    _forwardVec.y = 0;
+    if (_forwardVec.lengthSq() < 0.001) _forwardVec.set(0, 0, -1);
+    _forwardVec.normalize();
+    _rightVec.crossVectors(_forwardVec, camera.up).normalize();
+
+    _moveVec
+      .set(0, 0, 0)
+      .addScaledVector(_rightVec, dx)
+      .addScaledVector(_forwardVec, -dz);
+    _moveVec.y = dy;
+
+    const currentPos = goal.active ? goal.pos : camera.position;
+    const currentTarget = goal.active ? goal.target : controls.target;
+
+    goal.pos.copy(currentPos).add(_moveVec);
+    goal.target.copy(currentTarget).add(_moveVec);
+
+    if (zoomFactor !== 1) {
+      const offset = goal.pos.clone().sub(goal.target).multiplyScalar(zoomFactor);
+      if (offset.length() >= 1.1 && offset.length() <= 30) {
+        goal.pos.copy(goal.target).add(offset);
+      }
+    }
+
+    goal.pos.y = Math.max(0.6, Math.min(24, goal.pos.y));
+    goal.active = true;
+  };
+
+  useEffect(() => {
+    if (!rackFocusRequest) return;
+    const rk = site.racks.find((r) => r.id === rackFocusRequest.rackId);
+    if (rk) {
+      focusRackSide(rk, rackFocusRequest.side);
+    }
+  }, [rackFocusRequest, site.racks]);
+
   useEffect(() => {
     const goal = cameraGoalRef.current;
+    const zSign = viewSide === 'rear' ? -1 : 1;
     if (cameraPreset === 'site_overview') {
-      goal.pos.set(0, 7.8, 13.5);
+      goal.pos.set(0, 7.8, 13.5 * zSign);
       goal.target.set(0, 1.1, 0);
     } else if (cameraPreset === 'room_operator') {
-      goal.pos.set(-7.5, 4.2, 6.8);
+      goal.pos.set(-7.5, 4.0, 6.4 * zSign);
       goal.target.set(-7.5, 1.2, 0);
     } else if (cameraPreset === 'room_mmr') {
-      goal.pos.set(0, 3.8, 5.8);
-      goal.target.set(0, 1.3, -0.4);
+      goal.pos.set(0, 3.6, 5.4 * zSign);
+      goal.target.set(0, 1.25, -0.4);
     } else if (cameraPreset === 'room_client') {
-      goal.pos.set(7.5, 4.2, 6.8);
+      goal.pos.set(7.5, 4.0, 6.4 * zSign);
       goal.target.set(7.5, 1.2, 0);
     } else if (cameraPreset === 'mmr_closeup') {
-      goal.pos.set(0, 2.1, 2.9);
-      goal.target.set(0, 1.55, -0.5);
+      goal.pos.set(0, 2.0, 2.7 * zSign);
+      goal.target.set(0, 1.45, -0.64);
     }
     goal.active = true;
   }, [cameraPreset]);
@@ -266,14 +371,13 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
     if (selectedEntity.kind === 'rack') {
       const rk = site.racks.find((r) => r.id === selectedEntity.id);
       if (rk) {
-        goal.pos.set(rk.position3D[0], 2.2, rk.position3D[2] + 3.4);
-        goal.target.set(rk.position3D[0], 1.2, rk.position3D[2]);
-        goal.active = true;
+        focusRackSide(rk, viewSide);
       }
     } else if (selectedEntity.kind === 'room') {
       const rm = site.rooms.find((r) => r.id === selectedEntity.id);
       if (rm) {
-        goal.pos.set(rm.bounds.x, 4.8, rm.bounds.z + 7.2);
+        const zSign = viewSide === 'rear' ? -1 : 1;
+        goal.pos.set(rm.bounds.x, 4.6, rm.bounds.z + 6.8 * zSign);
         goal.target.set(rm.bounds.x, 1.2, rm.bounds.z);
         goal.active = true;
       }
@@ -378,9 +482,12 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.06;
-    controls.maxPolarAngle = Math.PI / 2 - 0.03;
-    controls.minDistance = 1.2;
+    controls.screenSpacePanning = true;
+    controls.maxPolarAngle = Math.PI / 2 - 0.02;
+    controls.minDistance = 0.9;
     controls.maxDistance = 32;
+    controls.zoomSpeed = 1.25;
+    controls.panSpeed = 1.2;
     controls.target.set(0, 1.1, 0);
 
     const stopCameraGoal = () => {
@@ -393,6 +500,44 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
     sceneObjectsRef.current.renderer = renderer;
     sceneObjectsRef.current.camera = camera;
     sceneObjectsRef.current.controls = controls;
+
+    // Keyboard navigation listeners (ZQSD / WASD / Arrows)
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        e.target instanceof HTMLSelectElement
+      ) {
+        return;
+      }
+      const k = e.key.toLowerCase();
+      if (
+        [
+          'arrowup',
+          'arrowdown',
+          'arrowleft',
+          'arrowright',
+          'z',
+          'w',
+          's',
+          'q',
+          'a',
+          'd',
+          'pageup',
+          'pagedown',
+        ].includes(k)
+      ) {
+        pressedKeysRef.current.add(k);
+        cameraGoalRef.current.active = false;
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      pressedKeysRef.current.delete(e.key.toLowerCase());
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
 
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
@@ -416,7 +561,13 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
       const hits = raycaster.intersectObjects(sceneObjectsRef.current.interactables, false);
 
       if (hits.length > 0) {
-        const hitObj = hits[0].object;
+        const topDist = hits[0].distance;
+        const portHit = hits.find(
+          (h) =>
+            h.distance <= topDist + 0.14 &&
+            h.object.userData?.entityRef?.kind === 'port'
+        );
+        const hitObj = (portHit || hits[0]).object;
         const ud = hitObj.userData;
         renderer.domElement.style.cursor = 'pointer';
         setHoverTooltip({
@@ -447,10 +598,16 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
       const hits = raycaster.intersectObjects(sceneObjectsRef.current.interactables, false);
 
       if (hits.length > 0) {
-        const ud = hits[0].object.userData;
+        const topDist = hits[0].distance;
+        const portHit = hits.find(
+          (h) =>
+            h.distance <= topDist + 0.14 &&
+            h.object.userData?.entityRef?.kind === 'port'
+        );
+        const ud = (portHit || hits[0]).object.userData;
         if (ud.entityRef) {
           const ref = ud.entityRef as SelectedEntityRef;
-          if (stateRef.current.isPatchingMode && ref.kind === 'port' && ref.equipmentId) {
+          if (ref.kind === 'port' && ref.equipmentId) {
             stateRef.current.onPortClickForPatching(ref.equipmentId, ref.id);
           } else {
             stateRef.current.onSelectEntity(ref);
@@ -459,9 +616,30 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
       }
     };
 
+    // Double-Click anywhere on a 3D object to smoothly fly/focus the camera onto it
+    const handleDoubleClick = (e: MouseEvent) => {
+      const rect = renderer.domElement.getBoundingClientRect();
+      mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+      raycaster.setFromCamera(mouse, camera);
+      const hits = raycaster.intersectObjects(sceneObjectsRef.current.interactables, false);
+      if (hits.length > 0) {
+        const pt = hits[0].point;
+        const goal = cameraGoalRef.current;
+        const dir = camera.position.clone().sub(controls.target).normalize();
+        const focusDist = Math.max(2.2, Math.min(4.2, camera.position.distanceTo(pt) * 0.65));
+        goal.target.set(pt.x, Math.max(0.8, pt.y), pt.z);
+        goal.pos.copy(goal.target).addScaledVector(dir, focusDist);
+        goal.pos.y = Math.max(1.2, goal.pos.y);
+        goal.active = true;
+      }
+    };
+
     renderer.domElement.addEventListener('pointerdown', handlePointerDown);
     renderer.domElement.addEventListener('pointermove', handlePointerMove);
     renderer.domElement.addEventListener('pointerup', handlePointerUp);
+    renderer.domElement.addEventListener('dblclick', handleDoubleClick);
 
     const handleResize = () => {
       if (!container) return;
@@ -480,6 +658,41 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
       animFrameId = requestAnimationFrame(animate);
       const delta = Math.min(clock.getDelta(), 0.1);
       const elapsed = clock.getElapsedTime();
+
+      // Process smooth keyboard movement (ZQSD / WASD / Arrows)
+      const keys = pressedKeysRef.current;
+      if (keys.size > 0) {
+        const moveSpeed = 6.5 * delta;
+        camera.getWorldDirection(_forwardVec);
+        _forwardVec.y = 0;
+        if (_forwardVec.lengthSq() < 0.001) _forwardVec.set(0, 0, -1);
+        _forwardVec.normalize();
+        _rightVec.crossVectors(_forwardVec, camera.up).normalize();
+
+        _moveVec.set(0, 0, 0);
+        if (keys.has('z') || keys.has('w') || keys.has('arrowup')) {
+          _moveVec.addScaledVector(_forwardVec, moveSpeed);
+        }
+        if (keys.has('s') || keys.has('arrowdown')) {
+          _moveVec.addScaledVector(_forwardVec, -moveSpeed);
+        }
+        if (keys.has('q') || keys.has('a') || keys.has('arrowleft')) {
+          _moveVec.addScaledVector(_rightVec, -moveSpeed);
+        }
+        if (keys.has('d') || keys.has('arrowright')) {
+          _moveVec.addScaledVector(_rightVec, moveSpeed);
+        }
+        if (keys.has('pageup')) {
+          _moveVec.y += moveSpeed * 0.7;
+        }
+        if (keys.has('pagedown')) {
+          _moveVec.y -= moveSpeed * 0.7;
+        }
+
+        camera.position.add(_moveVec);
+        controls.target.add(_moveVec);
+        camera.position.y = Math.max(0.5, Math.min(25, camera.position.y));
+      }
 
       const goal = cameraGoalRef.current;
       if (goal.active) {
@@ -545,9 +758,12 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
     return () => {
       cancelAnimationFrame(animFrameId);
       window.removeEventListener('resize', handleResize);
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
       renderer.domElement.removeEventListener('pointerdown', handlePointerDown);
       renderer.domElement.removeEventListener('pointermove', handlePointerMove);
       renderer.domElement.removeEventListener('pointerup', handlePointerUp);
+      renderer.domElement.removeEventListener('dblclick', handleDoubleClick);
       renderer.domElement.removeEventListener('webglcontextlost', handleContextLost);
       renderer.domElement.removeEventListener('webglcontextrestored', handleContextRestored);
       controls.dispose();
@@ -675,6 +891,50 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
         roomGroup.add(pillar);
       });
 
+      // Calepinage 6x6 Floor Axis Strip (Colonnes A..F — 1 Dalle 60x60cm = 1 Baie)
+      const colAxisTex = createLabelCanvasTexture(
+        'CALEPINAGE 60×60 CM (1 DALLE = 1 BAIE) :   [ COL A ]    [ COL B ]    [ COL C ]    [ COL D ]    [ COL E ]    [ COL F ]',
+        `Grille ${room.code} (Sans Demi-Baie) · Lignes 01 (Nord Arrière) → 06 (Sud)`,
+        room.colorHex,
+        maxAnisotropy,
+        920,
+        90
+      );
+      const colAxisGeo = new THREE.PlaneGeometry(room.bounds.width - 0.5, 0.42);
+      const colAxisMat = new THREE.MeshBasicMaterial({
+        map: colAxisTex,
+        transparent: true,
+        opacity: 0.92,
+      });
+      const colAxisMesh = new THREE.Mesh(colAxisGeo, colAxisMat);
+      colAxisMesh.rotation.x = -Math.PI / 2;
+      colAxisMesh.position.set(0, 0.006, halfD - 0.28);
+      roomGroup.add(colAxisMesh);
+
+      // Central Front Patching Aisle (Allée Centrale Baie Avant) floor strip indicator inside room
+      const aisleLabel =
+        room.type === 'mmr'
+          ? 'ALLÉE CENTRALE CROSS-CONNECT MMR (ACCÈS BAIE AVANT · JARRETIÈRES)'
+          : 'ALLÉE CENTRALE DE BRASSAGE (ACCÈS BAIE AVANT · JARRETIÈRES OS2)';
+      const aisleStripTex = createLabelCanvasTexture(
+        aisleLabel,
+        'Baie Avant = Ports & Jarretières · Baie Arrière = Câbles Rocades 24FO/12FO',
+        '#f59e0b',
+        maxAnisotropy,
+        780,
+        84
+      );
+      const aisleStripGeo = new THREE.PlaneGeometry(room.bounds.width - 0.8, 0.52);
+      const aisleStripMat = new THREE.MeshBasicMaterial({
+        map: aisleStripTex,
+        transparent: true,
+        opacity: 0.72,
+      });
+      const aisleStripMesh = new THREE.Mesh(aisleStripGeo, aisleStripMat);
+      aisleStripMesh.rotation.x = -Math.PI / 2;
+      aisleStripMesh.position.set(0, 0.005, 0.15);
+      roomGroup.add(aisleStripMesh);
+
       const backGlassGeo = new THREE.BoxGeometry(room.bounds.width - 0.2, 2.5, 0.04);
       const glassMat = new THREE.MeshPhysicalMaterial({
         color: roomColor,
@@ -732,7 +992,7 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
     });
 
     // =========================================================================
-    // B. BUILD RACKS & EQUIPMENTS / TIROIRS OPTIQUES (24FO / 12FO)
+    // B. BUILD RACKS (1:1 DALLE 60x60 CM) WITH BAIE AVANT & BAIE ARRIÈRE PLAQUES
     // =========================================================================
     site.racks.forEach((rack: Rack) => {
       const room = site.rooms.find((r) => r.id === rack.roomId);
@@ -744,11 +1004,12 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
       const isRackSelected =
         selectedEntity?.kind === 'rack' && selectedEntity.id === rack.id;
 
-      const rw = rack.widthM;
-      const rd = rack.depthM;
+      // Visual 1:1 square proportion for 60x60cm Dalle
+      const rw = Math.max(0.68, rack.widthM);
+      const rd = Math.max(0.68, rack.depthM);
       const rh = rack.heightM;
 
-      const shadowPlaneGeo = new THREE.PlaneGeometry(rw + 0.35, rd + 0.35);
+      const shadowPlaneGeo = new THREE.PlaneGeometry(rw + 0.3, rd + 0.3);
       const shadowPlaneMat = new THREE.MeshBasicMaterial({
         color: 0x000000,
         transparent: true,
@@ -759,6 +1020,19 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
       shadowPlane.rotation.x = -Math.PI / 2;
       shadowPlane.position.y = 0.005;
       rackGroup.add(shadowPlane);
+
+      // Exact 1-Tile 60x60cm Calepinage Floor Footprint Frame
+      const footprintEdgeGeo = new THREE.EdgesGeometry(
+        new THREE.BoxGeometry(rw + 0.12, 0.02, rd + 0.12)
+      );
+      const footprintEdgeMat = new THREE.LineBasicMaterial({
+        color: isRackSelected ? 0xfacc15 : new THREE.Color(room?.colorHex || '#38bdf8'),
+        transparent: true,
+        opacity: isRackSelected ? 1.0 : 0.85,
+      });
+      const footprintEdge = new THREE.LineSegments(footprintEdgeGeo, footprintEdgeMat);
+      footprintEdge.position.y = 0.012;
+      rackGroup.add(footprintEdge);
 
       const plinthGeo = new THREE.BoxGeometry(rw, 0.08, rd);
       const frameMat = new THREE.MeshStandardMaterial({
@@ -771,18 +1045,57 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
       plinthMesh.castShadow = true;
       plinthMesh.receiveShadow = true;
       plinthMesh.userData = {
-        badgeText: `BAIE TÉLÉCOM 42U (${rack.code})`,
+        badgeText: `BAIE ${rack.uTotal}U (${rack.code}) · ${rack.calepinage.tileRangeLabel.toUpperCase()}`,
         badgeColor: room?.colorHex || '#38bdf8',
-        title: rack.name,
-        subtitle: `Salle: ${room?.name || ''} · Hauteur ${rack.uTotal}U`,
-        meta:
-          rack.customAttributes[0]?.value ||
-          'Cliquez pour inspecter les tiroirs optiques et équipements de cette baie',
+        title: `${rack.name} (1 Baie = 1 Dalle 60×60 cm)`,
+        subtitle: `▼ ${rack.calepinage.frontFaceLabel}`,
+        meta: `▲ ${rack.calepinage.rearFaceLabel} · Double-cliquez pour zoomer`,
         accentColor: room?.colorHex || '#38bdf8',
         entityRef: { kind: 'rack', id: rack.id } as SelectedEntityRef,
       };
       rackGroup.add(plinthMesh);
       interactables.push(plinthMesh);
+
+      // 1. FRONT FLOOR PLAQUE ("BAIE AVANT — JARRETIÈRES")
+      const frontPlaqueTex = createLabelCanvasTexture(
+        `▼ BAIE AVANT · ${rack.calepinage.tileRangeLabel.toUpperCase()}`,
+        `Façade Brassage Jarretières OS2 · ${rack.code}`,
+        '#f59e0b',
+        maxAnisotropy,
+        460,
+        96
+      );
+      const frontPlaqueGeo = new THREE.PlaneGeometry(rw + 0.18, 0.24);
+      const frontPlaqueMat = new THREE.MeshBasicMaterial({
+        map: frontPlaqueTex,
+      });
+      const frontPlaqueMesh = new THREE.Mesh(frontPlaqueGeo, frontPlaqueMat);
+      frontPlaqueMesh.rotation.x = -Math.PI / 2;
+      frontPlaqueMesh.position.set(0, 0.011, rd / 2 + 0.2);
+      frontPlaqueMesh.userData = plinthMesh.userData;
+      rackGroup.add(frontPlaqueMesh);
+      interactables.push(frontPlaqueMesh);
+
+      // 2. REAR FLOOR PLAQUE ("BAIE ARRIÈRE — ARRIVÉE ROCADES 24FO/12FO")
+      const rearPlaqueTex = createLabelCanvasTexture(
+        `▲ BAIE ARRIÈRE · ${rack.calepinage.tileRangeLabel.toUpperCase()}`,
+        `Fond de Baie : Arrivée Câbles Rocades (24FO/12FO)`,
+        '#0284c7',
+        maxAnisotropy,
+        460,
+        96
+      );
+      const rearPlaqueGeo = new THREE.PlaneGeometry(rw + 0.18, 0.24);
+      const rearPlaqueMat = new THREE.MeshBasicMaterial({
+        map: rearPlaqueTex,
+      });
+      const rearPlaqueMesh = new THREE.Mesh(rearPlaqueGeo, rearPlaqueMat);
+      rearPlaqueMesh.rotation.x = -Math.PI / 2;
+      rearPlaqueMesh.rotation.z = Math.PI;
+      rearPlaqueMesh.position.set(0, 0.011, -rd / 2 - 0.2);
+      rearPlaqueMesh.userData = plinthMesh.userData;
+      rackGroup.add(rearPlaqueMesh);
+      interactables.push(rearPlaqueMesh);
 
       const postGeo = new THREE.BoxGeometry(0.045, rh - 0.14, 0.045);
       const postOffsets = [
@@ -843,14 +1156,14 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
       });
 
       const rackLabelTex = createLabelCanvasTexture(
-        rack.code,
-        `${rack.name.slice(0, 26)}`,
+        `${rack.code} · ${rack.calepinage.tileColumn}-${String(rack.calepinage.tileRow).padStart(2, '0')}`,
+        `${rack.calepinage.rowLabel} · ${rack.calepinage.positionInRow}`,
         room?.colorHex || '#38bdf8',
         maxAnisotropy,
-        420,
-        96
+        460,
+        104
       );
-      const rackSignGeo = new THREE.PlaneGeometry(rw * 0.96, 0.23);
+      const rackSignGeo = new THREE.PlaneGeometry(rw * 0.98, 0.25);
       const rackSignMat = new THREE.MeshBasicMaterial({
         map: rackLabelTex,
         side: THREE.DoubleSide,
@@ -938,18 +1251,29 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
         eqGroup.add(bezelMesh);
         interactables.push(bezelMesh);
 
-        // Individual 3D Optical Ports along the Front Faceplate
+        // Individual 3D Optical Ports along the Front Faceplate (Enlarged for easy 3D picking)
         const portCount = eq.ports.length;
-        const portSpanW = chassisW * 0.84;
-        const portGeo = new THREE.BoxGeometry(0.036, Math.min(0.036, eqHeightM * 0.55), 0.038);
+        const portSpanW = chassisW * 0.85;
+        const portGeo = new THREE.BoxGeometry(
+          isPatchingMode ? 0.048 : 0.042,
+          Math.min(isPatchingMode ? 0.048 : 0.04, eqHeightM * 0.65),
+          isPatchingMode ? 0.062 : 0.048
+        );
+
+        const draftSrcEq = patchingDraftSource
+          ? site.equipments.find((e) => e.id === patchingDraftSource.equipmentId)
+          : null;
+        const draftSrcRack = draftSrcEq
+          ? site.racks.find((r) => r.id === draftSrcEq.rackId)
+          : null;
 
         eq.ports.forEach((port: Port, pIdx: number) => {
           const px =
             portCount > 1
               ? -portSpanW / 2 + (pIdx / (portCount - 1)) * portSpanW
               : 0;
-          const py = -eqHeightM * 0.08;
-          const pzFront = chassisD / 2 + 0.03;
+          const py = -eqHeightM * 0.06;
+          const pzFront = chassisD / 2 + (isPatchingMode ? 0.04 : 0.032);
           const pzRear = -chassisD / 2 - 0.08;
 
           const isPartOfHighlightedChain =
@@ -960,37 +1284,78 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
           const isPortSelected =
             selectedEntity?.kind === 'port' && selectedEntity.id === port.id;
 
-          let portHex = 0x475569;
+          const connectedFib = port.connectedFiberId
+            ? site.fibers.find((f) => f.id === port.connectedFiberId)
+            : undefined;
+
+          let portHex = 0x64748b;
+          let emissiveHex = 0x000000;
+          let emissiveInt = 0;
+
           if (isPatchDraftSource || isPortSelected) {
-            portHex = 0xf43f5e;
-          } else if (isPartOfHighlightedChain) {
-            portHex = 0xf59e0b;
+            portHex = 0xf43f5e; // Rose/Magenta: Selected Source Port
+            emissiveHex = 0xf43f5e;
+            emissiveInt = 0.85;
           } else if (port.status === 'connected') {
-            if (port.connector.includes('APC')) portHex = 0x10b981; // APC Green
-            else portHex = 0x3b82f6; // UPC Blue
+            portHex = isPartOfHighlightedChain
+              ? 0xf59e0b
+              : port.connector.includes('APC')
+              ? 0x10b981
+              : 0x3b82f6;
+            emissiveHex = isPartOfHighlightedChain ? 0xf59e0b : 0x000000;
+            emissiveInt = isPartOfHighlightedChain ? 0.65 : 0;
+          } else if (isPatchingMode && port.status === 'free') {
+            // Highlight FREE ports brightly in Patching Mode so user knows where to click!
+            if (draftSrcRack && draftSrcRack.roomId === rack.roomId) {
+              portHex = 0x22c55e; // Bright green: same-room free port for Jarretière
+              emissiveHex = 0x22c55e;
+              emissiveInt = 0.55;
+            } else {
+              portHex = 0x38bdf8; // Bright sky-cyan: free port available
+              emissiveHex = 0x38bdf8;
+              emissiveInt = 0.45;
+            }
           }
 
           const portMat = new THREE.MeshStandardMaterial({
             color: portHex,
-            emissive: isPartOfHighlightedChain || isPatchDraftSource ? portHex : 0x000000,
-            emissiveIntensity: isPartOfHighlightedChain || isPatchDraftSource ? 0.65 : 0,
-            roughness: 0.25,
-            metalness: 0.5,
+            emissive: emissiveHex,
+            emissiveIntensity: emissiveInt,
+            roughness: 0.22,
+            metalness: 0.45,
           });
 
           const portMesh = new THREE.Mesh(portGeo, portMat);
           portMesh.position.set(px, py, pzFront);
           portMesh.userData = {
-            badgeText: `PORT OPTIQUE OS2 (${port.connector})`,
-            badgeColor: port.connector.includes('APC') ? '#10b981' : '#3b82f6',
-            title: `${eq.code} · ${port.label}`,
-            subtitle: `Monomode OS2 (${port.wavelengthNm} nm) · État: ${
-              port.status === 'connected' ? 'Connecté' : 'Libre'
-            }`,
-            meta: stateRef.current.isPatchingMode
-              ? 'Mode Brassage : Cliquez pour raccorder une jarretière OS2 sur ce port'
-              : 'Face Avant : Reçoit une Jarretière Optique (Mono-Fibre ou Bi-Fibre)',
-            accentColor: isPartOfHighlightedChain ? '#f59e0b' : '#38bdf8',
+            badgeText:
+              port.status === 'connected'
+                ? `PORT OCCUPÉ · ${port.connector} (CLIQUER POUR GÉRER / DÉBRANCHER)`
+                : isPatchDraftSource
+                ? `PORT DÉPART SÉLECTIONNÉ (EXTRÉMITÉ A)`
+                : `PORT LIBRE DISPONIBLE · ${port.connector}`,
+            badgeColor:
+              port.status === 'connected'
+                ? '#f59e0b'
+                : isPatchDraftSource
+                ? '#f43f5e'
+                : '#10b981',
+            title: `${rack.code} · ${eq.code} · ${port.label}`,
+            subtitle:
+              port.status === 'connected' && connectedFib
+                ? `Relié à : ${connectedFib.code} (${
+                    connectedFib.kind === 'trunk_cable'
+                      ? `Câble Rocade ${connectedFib.trunkCapacity || '24FO'}`
+                      : `Jarretière ${connectedFib.polarity.split(' ')[0]}`
+                  })`
+                : `État : LIBRE (Prêt à être brassé en Monomode OS2)`,
+            meta:
+              port.status === 'connected'
+                ? 'Cliquez sur ce port pour ouvrir sa fiche rapide et DÉBRANCHER proprement le câble ou la jarretière.'
+                : patchingDraftSource
+                ? `Cliquez ici pour RACCORDER depuis ${patchingDraftSource.portId} vers ce port libre.`
+                : 'Cliquez sur ce port libre pour le choisir comme PORT DE DÉPART (Extrémité A).',
+            accentColor: port.status === 'connected' ? '#f59e0b' : '#10b981',
             entityRef: {
               kind: 'port',
               id: port.id,
@@ -1000,6 +1365,18 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
 
           eqGroup.add(portMesh);
           interactables.push(portMesh);
+
+          // If this port is the active Patching Source (Extrémité A), render a glowing beacon ring in 3D
+          if (isPatchDraftSource) {
+            const ringMarkerGeo = new THREE.RingGeometry(0.035, 0.052, 20);
+            const ringMarkerMat = new THREE.MeshBasicMaterial({
+              color: 0xf43f5e,
+              side: THREE.DoubleSide,
+            });
+            const ringMarker = new THREE.Mesh(ringMarkerGeo, ringMarkerMat);
+            ringMarker.position.set(px, py, pzFront + 0.036);
+            eqGroup.add(ringMarker);
+          }
 
           const worldPosFront = new THREE.Vector3(
             rack.position3D[0] + px,
@@ -1338,7 +1715,7 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
     sceneObjectsRef.current.explodables = explodables;
 
     renderer.compile(scene, camera);
-  }, [site, highlightedFiberIds, selectedEntity, patchingDraftSource]);
+  }, [site, highlightedFiberIds, selectedEntity, patchingDraftSource, isPatchingMode]);
 
   return (
     <div className="relative w-full h-full overflow-hidden bg-slate-950">
@@ -1355,20 +1732,20 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
         </div>
       )}
 
-      {/* Visual Legend differentiating Jarretière vs Câble Rocade in Top-Right corner of 3D Scene */}
+      {/* Visual Legend differentiating Jarretière (Baie Avant) vs Câble Rocade (Baie Arrière) in Top-Right corner */}
       <div className="pointer-events-auto absolute top-4 right-6 z-20 bg-slate-900/95 border border-slate-800 rounded-xl px-4 py-3 shadow-xl max-w-xs space-y-2">
         <div className="text-xs font-bold text-slate-100">
-          Distinction Physique (100% Monomode OS2)
+          Baie Avant vs Baie Arrière (Dalles 60×60 cm)
         </div>
         <div className="space-y-1.5 text-[11px]">
           <div className="flex items-start gap-2">
             <span className="w-3.5 h-2 rounded-xs bg-amber-400 mt-1 shrink-0" />
             <div>
               <span className="font-semibold text-amber-300">
-                Jarretière Optique (1FO Mono ou 2FO Bi-Fibre)
+                Baie AVANT : Jarretières OS2 (1FO / 2FO)
               </span>
               <p className="text-slate-400 leading-tight">
-                Face avant · Relie équipements/baies dans la <strong>même salle</strong> (ou Cross-Connect entre les 2 baies MMR).
+                Façade ports optiques · Brassage intra-salle et Cross-Connect MMR.
               </p>
             </div>
           </div>
@@ -1376,13 +1753,151 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
             <span className="w-3.5 h-2.5 rounded-xs bg-sky-500 border border-amber-400 mt-1 shrink-0" />
             <div>
               <span className="font-semibold text-sky-400">
-                Câble Fibre Rocade (6FO / 12FO / 24FO)
+                Baie ARRIÈRE : Câbles Rocades (24FO / 12FO)
               </span>
               <p className="text-slate-400 leading-tight">
-                Arrière tiroir · Relie <strong>Baie SFR (24FO)</strong> ou <strong>Baie Client (12FO)</strong> vers la <strong>Salle MMR</strong> (Déployé par l&apos;Hébergeur Tiers).
+                Fond de baie · Arrivée des câbles inter-salles (Hébergeur Tiers).
               </p>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* ===================================================================== */}
+      {/* FLOATING 3D NAVIGATION CONTROLLER (D-PAD + AVANT/ARRIÈRE + ORBIT/PAN) */}
+      {/* ===================================================================== */}
+      <div className="pointer-events-auto absolute bottom-24 right-6 z-20 bg-slate-900/95 backdrop-blur-md border border-slate-700 rounded-xl p-3 shadow-2xl w-64 space-y-2.5">
+        <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
+          <span className="text-xs font-bold text-slate-100">
+            Pilotage Navigation 3D
+          </span>
+          <span className="text-[10px] font-mono text-amber-400">
+            Clavier ZQSD / Flèches
+          </span>
+        </div>
+
+        {/* 1-Click Switch: Vue Baie AVANT vs Vue Baie ARRIÈRE */}
+        <div className="grid grid-cols-2 gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800">
+          <button
+            onClick={() => handleToggleFrontRearSide('front')}
+            className={`px-2 py-1.5 text-[11px] font-semibold rounded transition-colors ${
+              viewSide === 'front'
+                ? 'bg-amber-500 text-slate-950'
+                : 'text-slate-300 hover:text-white'
+            }`}
+          >
+            ▼ Vue Baie AVANT
+          </button>
+          <button
+            onClick={() => handleToggleFrontRearSide('rear')}
+            className={`px-2 py-1.5 text-[11px] font-semibold rounded transition-colors ${
+              viewSide === 'rear'
+                ? 'bg-sky-500 text-slate-950'
+                : 'text-slate-300 hover:text-white'
+            }`}
+          >
+            ▲ Vue Baie ARRIÈRE
+          </button>
+        </div>
+
+        {/* Mouse Left-Click Mode Toggle: Orbit vs Pan (Great for Trackpads!) */}
+        <div className="grid grid-cols-2 gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800">
+          <button
+            onClick={() => setMouseLeftMode('orbit')}
+            className={`px-2 py-1 text-[11px] font-medium rounded transition-colors ${
+              mouseLeftMode === 'orbit'
+                ? 'bg-slate-800 text-amber-300 border border-amber-500/40'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Clic G : Tourner
+          </button>
+          <button
+            onClick={() => setMouseLeftMode('pan')}
+            className={`px-2 py-1 text-[11px] font-medium rounded transition-colors ${
+              mouseLeftMode === 'pan'
+                ? 'bg-slate-800 text-sky-300 border border-sky-500/40'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Clic G : Glisser
+          </button>
+        </div>
+
+        {/* Directional Pad (Avancer / Reculer / Gauche / Droite / Zoom) */}
+        <div className="grid grid-cols-3 gap-1 text-xs font-mono">
+          <button
+            onClick={() => nudgeCamera3D(0, 0, 0, 0.8)}
+            className="py-1.5 bg-slate-800 hover:bg-slate-700 text-sky-300 rounded border border-slate-700 font-bold"
+            title="Zoomer +"
+          >
+            Zoom +
+          </button>
+          <button
+            onClick={() => nudgeCamera3D(0, 0, -2.2)}
+            className="py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded border border-slate-700 font-bold"
+            title="Avancer (Z / Flèche Haut)"
+          >
+            ↑ Avancer
+          </button>
+          <button
+            onClick={() => nudgeCamera3D(0, 0, 0, 1.25)}
+            className="py-1.5 bg-slate-800 hover:bg-slate-700 text-sky-300 rounded border border-slate-700 font-bold"
+            title="Dézoomer -"
+          >
+            Zoom -
+          </button>
+
+          <button
+            onClick={() => nudgeCamera3D(-2.4, 0, 0)}
+            className="py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded border border-slate-700 font-bold"
+            title="Déplacer à gauche (Q / Flèche Gauche)"
+          >
+            ← Gauche
+          </button>
+          <button
+            onClick={() => {
+              const goal = cameraGoalRef.current;
+              goal.pos.set(0, 7.8, viewSide === 'rear' ? -13.5 : 13.5);
+              goal.target.set(0, 1.1, 0);
+              goal.active = true;
+            }}
+            className="py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 rounded border border-amber-500/40 font-bold"
+            title="Recentrer sur le site"
+          >
+            ⌖ Site
+          </button>
+          <button
+            onClick={() => nudgeCamera3D(2.4, 0, 0)}
+            className="py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded border border-slate-700 font-bold"
+            title="Déplacer à droite (D / Flèche Droite)"
+          >
+            Droite →
+          </button>
+
+          <button
+            onClick={() => nudgeCamera3D(0, 1.2, 0)}
+            className="py-1 bg-slate-950 hover:bg-slate-800 text-slate-300 rounded border border-slate-800 text-[10px]"
+          >
+            Monter ↑
+          </button>
+          <button
+            onClick={() => nudgeCamera3D(0, 0, 2.2)}
+            className="py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded border border-slate-700 font-bold"
+            title="Reculer (S / Flèche Bas)"
+          >
+            ↓ Reculer
+          </button>
+          <button
+            onClick={() => nudgeCamera3D(0, -1.2, 0)}
+            className="py-1 bg-slate-950 hover:bg-slate-800 text-slate-300 rounded border border-slate-800 text-[10px]"
+          >
+            Descendre ↓
+          </button>
+        </div>
+
+        <div className="text-[10px] text-slate-400 text-center leading-tight pt-0.5">
+          Astuce : <strong>Double-cliquez</strong> sur une baie ou un tiroir 3D pour y voler directement.
         </div>
       </div>
 
