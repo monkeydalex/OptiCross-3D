@@ -1,0 +1,6 @@
+{
+  "name": "OptiCross 3D — Simulateur Cross-Connect & Infrastructure Télécom",
+  "description": "Application CAO 3D/2D interactive pour la modélisation de salles télécoms (MMR, Opérateur, Client), le brassage optique dynamique, la gestion des chemins de câblage et l'export documentaire SVG/PDF.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
