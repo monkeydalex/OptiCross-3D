@@ -30,6 +30,7 @@ interface ThreeSceneViewportProps {
   onSelectEntity: (entity: SelectedEntityRef | null) => void;
   highlightedFiberIds: string[];
   cameraPreset: CameraPreset;
+  cameraPresetNonce: number;
   explodedFactor: number;
   pulseSpeed: number;
   showPathways: boolean;
@@ -54,9 +55,7 @@ interface HoverTooltip {
 interface PulseRunner {
   curve: THREE.CatmullRomCurve3;
   mesh: THREE.Mesh;
-  hopIndex: number;
-  totalHops: number;
-  color: THREE.Color;
+  phase: number;
 }
 
 interface ExplodablePart {
@@ -70,6 +69,12 @@ const _vec3A = new THREE.Vector3();
 const _forwardVec = new THREE.Vector3();
 const _rightVec = new THREE.Vector3();
 const _moveVec = new THREE.Vector3();
+const _yAxis = new THREE.Vector3(0, 1, 0);
+
+// Couleur de mise en évidence de la route sélectionnée : cyan, pour trancher
+// avec le jaune des jarretières et des chemins de câbles.
+const ROUTE_GLOW_COLOR = 0x22d3ee;
+const PULSES_PER_FIBER = 3;
 
 function createLabelCanvasTexture(
   title: string,
@@ -159,6 +164,7 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
   onSelectEntity,
   highlightedFiberIds,
   cameraPreset,
+  cameraPresetNonce,
   explodedFactor,
   pulseSpeed,
   showPathways,
@@ -235,6 +241,7 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
     controls: OrbitControls | null;
     interactables: THREE.Object3D[];
     pulseRunners: PulseRunner[];
+    routeGlowMaterials: THREE.MeshBasicMaterial[];
     explodables: ExplodablePart[];
     pathwayGroup: THREE.Group | null;
     labelsGroup: THREE.Group | null;
@@ -247,6 +254,7 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
     controls: null,
     interactables: [],
     pulseRunners: [],
+    routeGlowMaterials: [],
     explodables: [],
     pathwayGroup: null,
     labelsGroup: null,
@@ -363,7 +371,7 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
       goal.target.set(0, 1.45, -0.64);
     }
     goal.active = true;
-  }, [cameraPreset]);
+  }, [cameraPreset, cameraPresetNonce]);
 
   useEffect(() => {
     if (!selectedEntity) return;
@@ -714,13 +722,9 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
 
       controls.update();
 
-      const targetExplode = stateRef.current.explodedFactor;
-      sceneObjectsRef.current.currentExploded = THREE.MathUtils.damp(
-        sceneObjectsRef.current.currentExploded,
-        targetExplode,
-        6.0,
-        delta
-      );
+      // Pas d'amorti : les fibres sont reconstruites à la valeur exacte du curseur,
+      // les équipements doivent donc être au même endroit qu'elles.
+      sceneObjectsRef.current.currentExploded = stateRef.current.explodedFactor;
       const curExp = sceneObjectsRef.current.currentExploded;
       const explodables = sceneObjectsRef.current.explodables;
       for (let i = 0; i < explodables.length; i++) {
@@ -744,10 +748,17 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
           continue;
         }
         runner.mesh.visible = true;
-        const cycle = (elapsed * 0.55 * speed - runner.hopIndex * 0.25) % 1.0;
+        const cycle = (elapsed * 0.55 * speed + runner.phase) % 1.0;
         const t = cycle < 0 ? cycle + 1.0 : cycle;
         runner.curve.getPointAt(t, _vec3A);
         runner.mesh.position.copy(_vec3A);
+      }
+
+      // Respiration lumineuse de la gaine de la route sélectionnée
+      const glowFactor = 0.75 + 0.25 * Math.sin(elapsed * 3.2);
+      const glowMats = sceneObjectsRef.current.routeGlowMaterials;
+      for (let i = 0; i < glowMats.length; i++) {
+        glowMats[i].opacity = glowMats[i].userData.baseOpacity * glowFactor;
       }
 
       renderer.render(scene, camera);
@@ -783,11 +794,13 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
         const mesh = obj as THREE.Mesh;
         if (mesh.geometry) mesh.geometry.dispose();
         if (mesh.material) {
-          if (Array.isArray(mesh.material)) {
-            mesh.material.forEach((m) => m.dispose());
-          } else {
-            mesh.material.dispose();
-          }
+          // Les textures (étiquettes dessinées sur canvas, dalles) ne sont pas libérées
+          // par material.dispose() : sans cela, chaque reconstruction fuit de la mémoire GPU.
+          const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+          mats.forEach((m) => {
+            (m as THREE.MeshStandardMaterial).map?.dispose();
+            m.dispose();
+          });
         }
       });
     }
@@ -815,6 +828,8 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
         posFront: THREE.Vector3;
         posRear: THREE.Vector3;
         rackPos: THREE.Vector3;
+        frontDir: number; // +1 : face avant vers +Z ; -1 : baie retournée
+
         rackWidth: number;
         rackDepth: number;
         rackId: string;
@@ -1000,6 +1015,7 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
       rackGroup.position.set(rack.position3D[0], rack.position3D[1], rack.position3D[2]);
       rackGroup.rotation.y = rack.rotationY;
       dynamicRoot.add(rackGroup);
+      const rackWorldPos = new THREE.Vector3(...rack.position3D);
 
       const isRackSelected =
         selectedEntity?.kind === 'rack' && selectedEntity.id === rack.id;
@@ -1186,10 +1202,12 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
         eqGroup.position.set(0, baseY, 0);
         rackGroup.add(eqGroup);
 
+        const eqExplodeDeltaY = (eq.uPosition / 42) * 0.35;
+        const eqExplodeY = eqExplodeDeltaY * explodedFactor;
         explodables.push({
           object: eqGroup,
           baseY,
-          explodeDeltaY: (eq.uPosition / 42) * 0.35,
+          explodeDeltaY: eqExplodeDeltaY,
         });
 
         const isEqSelected =
@@ -1378,21 +1396,22 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
             eqGroup.add(ringMarker);
           }
 
-          const worldPosFront = new THREE.Vector3(
-            rack.position3D[0] + px,
-            rack.position3D[1] + baseY + py,
-            rack.position3D[2] + pzFront
-          );
-          const worldPosRear = new THREE.Vector3(
-            rack.position3D[0] + px * 0.25,
-            rack.position3D[1] + baseY + py,
-            rack.position3D[2] + pzRear
-          );
+          // Positions monde : tiennent compte de la rotation de la baie (orientation inversée)
+          // et de la vue éclatée, pour que les fibres restent accrochées aux ports.
+          const eqY = baseY + eqExplodeY;
+          const worldPosFront = new THREE.Vector3(px, eqY + py, pzFront)
+            .applyAxisAngle(_yAxis, rack.rotationY)
+            .add(rackWorldPos);
+          const worldPosRear = new THREE.Vector3(px * 0.25, eqY + py, pzRear)
+            .applyAxisAngle(_yAxis, rack.rotationY)
+            .add(rackWorldPos);
 
-          portWorldPositions.set(port.id, {
+          // Clé équipement + port : deux équipements peuvent porter des ports de même id
+          portWorldPositions.set(`${eq.id}/${port.id}`, {
             posFront: worldPosFront,
             posRear: worldPosRear,
-            rackPos: new THREE.Vector3(...rack.position3D),
+            rackPos: rackWorldPos,
+            frontDir: Math.cos(rack.rotationY),
             rackWidth: rw,
             rackDepth: rd,
             rackId: rack.id,
@@ -1420,7 +1439,9 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
         metalness: 0.2,
         clearcoat: 0.6,
         transparent: true,
-        opacity: 0.72,
+        // Atténués quand une route est mise en évidence, pour qu'elle ressorte
+        opacity: hasActiveHighlight && !isPwSelected ? 0.3 : 0.72,
+        depthWrite: !hasActiveHighlight,
       });
 
       for (let i = 0; i < pathway.waypoints.length - 1; i++) {
@@ -1471,12 +1492,15 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
     // =========================================================================
     // D. BUILD DYNAMIC 3D CÂBLES ROCADES (24FO / 12FO) VS JARRETIÈRES (1FO / 2FO)
     // =========================================================================
-    const pulseSphereGeo = new THREE.SphereGeometry(0.06, 16, 16);
+    const pulseSphereGeo = new THREE.SphereGeometry(0.035, 12, 12);
     const renderedTrunkBadges = new Set<string>();
 
+    const pathwayExplodeY = 0.65 * explodedFactor;
+    const routeGlowMaterials: THREE.MeshBasicMaterial[] = [];
+
     site.fibers.forEach((fiber: FiberConnection, fibIdx: number) => {
-      const srcInfo = portWorldPositions.get(fiber.sourcePortId);
-      const dstInfo = portWorldPositions.get(fiber.targetPortId);
+      const srcInfo = portWorldPositions.get(`${fiber.sourceEquipmentId}/${fiber.sourcePortId}`);
+      const dstInfo = portWorldPositions.get(`${fiber.targetEquipmentId}/${fiber.targetPortId}`);
       if (!srcInfo || !dstInfo) return;
 
       const isHighlighted = highlightedSet.has(fiber.id);
@@ -1497,18 +1521,21 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
         // =====================================================================
         const pStart = srcInfo.posRear.clone();
         const pEnd = dstInfo.posRear.clone();
-        const trunkTrayY = 2.52;
+        const trunkTrayY = 2.52 + pathwayExplodeY;
         const zSpine = -0.18;
+        // Côté arrière de chaque baie (inversé si la baie est retournée)
+        const srcRearZ = srcInfo.rackPos.z - srcInfo.frontDir * (srcInfo.rackDepth / 2 + 0.14);
+        const dstRearZ = dstInfo.rackPos.z - dstInfo.frontDir * (dstInfo.rackDepth / 2 + 0.14);
 
         curvePoints.push(
           pStart,
-          new THREE.Vector3(pStart.x, pStart.y, srcInfo.rackPos.z - srcInfo.rackDepth / 2 - 0.14),
-          new THREE.Vector3(srcInfo.rackPos.x, 2.28, srcInfo.rackPos.z - srcInfo.rackDepth / 2 - 0.14),
+          new THREE.Vector3(pStart.x, pStart.y, srcRearZ),
+          new THREE.Vector3(srcInfo.rackPos.x, 2.28 + pathwayExplodeY, srcRearZ),
           new THREE.Vector3(srcInfo.rackPos.x, trunkTrayY, zSpine),
           new THREE.Vector3((srcInfo.rackPos.x + dstInfo.rackPos.x) / 2, trunkTrayY, zSpine),
           new THREE.Vector3(dstInfo.rackPos.x, trunkTrayY, zSpine),
-          new THREE.Vector3(dstInfo.rackPos.x, 2.28, dstInfo.rackPos.z - dstInfo.rackDepth / 2 - 0.14),
-          new THREE.Vector3(pEnd.x, pEnd.y, dstInfo.rackPos.z - dstInfo.rackDepth / 2 - 0.14),
+          new THREE.Vector3(dstInfo.rackPos.x, 2.28 + pathwayExplodeY, dstRearZ),
+          new THREE.Vector3(pEnd.x, pEnd.y, dstRearZ),
           pEnd
         );
       } else {
@@ -1519,40 +1546,42 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
         const pStart = srcInfo.posFront.clone();
         const pEnd = dstInfo.posFront.clone();
         const laneOffset = ((fibIdx % 5) - 2) * 0.025;
+        const sDir = srcInfo.frontDir;
+        const dDir = dstInfo.frontDir;
 
         curvePoints.push(pStart);
-        curvePoints.push(pStart.clone().add(new THREE.Vector3(0, 0, 0.11)));
+        curvePoints.push(pStart.clone().add(new THREE.Vector3(0, 0, 0.11 * sDir)));
 
         if (srcInfo.rackId === dstInfo.rackId) {
           // Jarretière dans la même baie (ex: Routeur SFR -> Tiroir SFR 24FO, ou Tiroir Client 12FO -> Routeur Client)
           const goulotteX = srcInfo.rackPos.x + srcInfo.rackWidth / 2 + 0.05;
           curvePoints.push(
-            new THREE.Vector3(goulotteX, pStart.y, pStart.z + 0.13),
+            new THREE.Vector3(goulotteX, pStart.y, pStart.z + 0.13 * sDir),
             new THREE.Vector3(
               goulotteX + 0.04,
               (pStart.y + pEnd.y) / 2,
-              srcInfo.rackPos.z + srcInfo.rackDepth / 2 + 0.1
+              srcInfo.rackPos.z + sDir * (srcInfo.rackDepth / 2 + 0.1)
             ),
-            new THREE.Vector3(goulotteX, pEnd.y, pEnd.z + 0.13)
+            new THREE.Vector3(goulotteX, pEnd.y, pEnd.z + 0.13 * sDir)
           );
         } else {
           // Jarretière entre 2 baies de la MÊME SALLE (ex: Cross-Connect MMR entre Baie MMR-OP et Baie MMR-CLI)
           const goulotteXA = srcInfo.rackPos.x + srcInfo.rackWidth / 2 + 0.04;
           const goulotteXB = dstInfo.rackPos.x - dstInfo.rackWidth / 2 - 0.04;
-          const trayY = 2.42 + laneOffset * 0.5;
+          const trayY = 2.42 + laneOffset * 0.5 + pathwayExplodeY;
 
           curvePoints.push(
-            new THREE.Vector3(goulotteXA, pStart.y, pStart.z + 0.12),
-            new THREE.Vector3(goulotteXA, 2.22, srcInfo.rackPos.z + 0.25),
+            new THREE.Vector3(goulotteXA, pStart.y, pStart.z + 0.12 * sDir),
+            new THREE.Vector3(goulotteXA, 2.22 + pathwayExplodeY, srcInfo.rackPos.z + 0.25 * sDir),
             new THREE.Vector3(srcInfo.rackPos.x, trayY, 0.05 + laneOffset),
             new THREE.Vector3((srcInfo.rackPos.x + dstInfo.rackPos.x) / 2, trayY + 0.04, 0.05 + laneOffset),
             new THREE.Vector3(dstInfo.rackPos.x, trayY, 0.05 + laneOffset),
-            new THREE.Vector3(goulotteXB, 2.22, dstInfo.rackPos.z + 0.25),
-            new THREE.Vector3(goulotteXB, pEnd.y, pEnd.z + 0.12)
+            new THREE.Vector3(goulotteXB, 2.22 + pathwayExplodeY, dstInfo.rackPos.z + 0.25 * dDir),
+            new THREE.Vector3(goulotteXB, pEnd.y, pEnd.z + 0.12 * dDir)
           );
         }
 
-        curvePoints.push(pEnd.clone().add(new THREE.Vector3(0, 0, 0.11)));
+        curvePoints.push(pEnd.clone().add(new THREE.Vector3(0, 0, 0.11 * dDir)));
         curvePoints.push(pEnd);
       }
 
@@ -1586,7 +1615,8 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
           roughness: 0.35,
           metalness: 0.4,
           transparent: dimmed,
-          opacity: dimmed ? 0.28 : 1.0,
+          opacity: dimmed ? 0.16 : 1.0,
+          depthWrite: !dimmed,
         });
         const tubeMesh = new THREE.Mesh(tubeGeo, tubeMat);
         tubeMesh.castShadow = !dimmed;
@@ -1605,6 +1635,9 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
           color: 0xfacc15,
           roughness: 0.3,
           metalness: 0.3,
+          transparent: dimmed,
+          opacity: dimmed ? 0.16 : 1.0,
+          depthWrite: !dimmed,
         });
         [0.25, 0.5, 0.75].forEach((tPos) => {
           const pt = curve.getPointAt(tPos);
@@ -1641,7 +1674,7 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
           interactables.push(signMesh);
           explodables.push({
             object: signMesh,
-            baseY: midPt.y + 0.38,
+            baseY: midPt.y + 0.38 - pathwayExplodeY, // midPt inclut déjà l'éclatement
             explodeDeltaY: 0.65,
           });
         }
@@ -1655,7 +1688,8 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
           roughness: 0.25,
           metalness: 0.15,
           transparent: dimmed,
-          opacity: dimmed ? 0.22 : 1.0,
+          opacity: dimmed ? 0.14 : 1.0,
+          depthWrite: !dimmed,
         });
 
         if (isBiFibre) {
@@ -1683,39 +1717,79 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
         }
       }
 
-      // Add glowing optical laser pulse runner if this fiber is part of the highlighted chain
-      if (isHighlighted) {
-        const hopIndex = highlightedFiberIds.indexOf(fiber.id);
-        const pulseMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-        const pulseMesh = new THREE.Mesh(pulseSphereGeo, pulseMat);
-
-        const haloGeo = new THREE.SphereGeometry(0.1, 12, 12);
-        const haloMat = new THREE.MeshBasicMaterial({
-          color: baseColor,
+      // Route sélectionnée : gaine lumineuse cyan + tracé "rayons X" visible à travers
+      // baies et chemins de câbles, puis impulsions lumineuses qui parcourent la fibre.
+      if (isHighlighted || isSelected) {
+        const coreRadius = isTrunkCable ? 0.042 : 0.03;
+        const glowMat = new THREE.MeshBasicMaterial({
+          color: ROUTE_GLOW_COLOR,
           transparent: true,
-          opacity: 0.6,
+          opacity: isSelected ? 0.5 : 0.35,
+          blending: THREE.AdditiveBlending,
           depthWrite: false,
         });
-        const haloMesh = new THREE.Mesh(haloGeo, haloMat);
-        pulseMesh.add(haloMesh);
+        glowMat.userData.baseOpacity = glowMat.opacity;
+        const glowMesh = new THREE.Mesh(
+          new THREE.TubeGeometry(curve, 72, coreRadius * 2.4, 10, false),
+          glowMat
+        );
+        glowMesh.renderOrder = 2;
+        dynamicRoot.add(glowMesh);
+        routeGlowMaterials.push(glowMat);
 
-        dynamicRoot.add(pulseMesh);
-        pulseRunners.push({
-          curve,
-          mesh: pulseMesh,
-          hopIndex: Math.max(0, hopIndex),
-          totalHops: highlightedFiberIds.length,
-          color: baseColor,
+        const xrayMat = new THREE.MeshBasicMaterial({
+          color: ROUTE_GLOW_COLOR,
+          transparent: true,
+          opacity: 0.3,
+          depthTest: false,
+          depthWrite: false,
         });
+        const xrayMesh = new THREE.Mesh(
+          new THREE.TubeGeometry(curve, 72, coreRadius * 0.6, 8, false),
+          xrayMat
+        );
+        xrayMesh.renderOrder = 3;
+        dynamicRoot.add(xrayMesh);
+      }
+
+      if (isHighlighted) {
+        const hopIndex = Math.max(0, highlightedFiberIds.indexOf(fiber.id));
+        for (let k = 0; k < PULSES_PER_FIBER; k++) {
+          const pulseMesh = new THREE.Mesh(
+            pulseSphereGeo,
+            new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false })
+          );
+          const haloMesh = new THREE.Mesh(
+            new THREE.SphereGeometry(0.075, 12, 12),
+            new THREE.MeshBasicMaterial({
+              color: ROUTE_GLOW_COLOR,
+              transparent: true,
+              opacity: 0.55,
+              blending: THREE.AdditiveBlending,
+              depthTest: false,
+              depthWrite: false,
+            })
+          );
+          pulseMesh.renderOrder = 4;
+          haloMesh.renderOrder = 4;
+          pulseMesh.add(haloMesh);
+          dynamicRoot.add(pulseMesh);
+          pulseRunners.push({
+            curve,
+            mesh: pulseMesh,
+            phase: k / PULSES_PER_FIBER - hopIndex * 0.25,
+          });
+        }
       }
     });
 
     sceneObjectsRef.current.interactables = interactables;
     sceneObjectsRef.current.pulseRunners = pulseRunners;
     sceneObjectsRef.current.explodables = explodables;
+    sceneObjectsRef.current.routeGlowMaterials = routeGlowMaterials;
 
     renderer.compile(scene, camera);
-  }, [site, highlightedFiberIds, selectedEntity, patchingDraftSource, isPatchingMode]);
+  }, [site, highlightedFiberIds, selectedEntity, patchingDraftSource, isPatchingMode, explodedFactor]);
 
   return (
     <div className="relative w-full h-full overflow-hidden bg-slate-950">
@@ -1733,7 +1807,7 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
       )}
 
       {/* Visual Legend differentiating Jarretière (Baie Avant) vs Câble Rocade (Baie Arrière) in Top-Right corner */}
-      <div className="pointer-events-auto absolute top-4 right-6 z-20 bg-slate-900/95 border border-slate-800 rounded-xl px-4 py-3 shadow-xl max-w-xs space-y-2">
+      <div className="pointer-events-auto absolute top-4 right-6 z-20 hidden md:block bg-slate-900/95 border border-slate-800 rounded-xl px-4 py-3 shadow-xl max-w-xs space-y-2">
         <div className="text-xs font-bold text-slate-100">
           Baie Avant vs Baie Arrière (Dalles 60×60 cm)
         </div>
@@ -1766,7 +1840,7 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
       {/* ===================================================================== */}
       {/* FLOATING 3D NAVIGATION CONTROLLER (D-PAD + AVANT/ARRIÈRE + ORBIT/PAN) */}
       {/* ===================================================================== */}
-      <div className="pointer-events-auto absolute bottom-24 right-6 z-20 bg-slate-900/95 backdrop-blur-md border border-slate-700 rounded-xl p-3 shadow-2xl w-64 space-y-2.5">
+      <div className="pointer-events-auto absolute bottom-56 right-6 z-20 hidden md:block bg-slate-900/95 backdrop-blur-md border border-slate-700 rounded-xl p-3 shadow-2xl w-64 space-y-2.5">
         <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
           <span className="text-xs font-bold text-slate-100">
             Pilotage Navigation 3D

@@ -71,13 +71,22 @@ export default function App() {
     string[] | null
   >(null);
 
-  const [cameraPreset, setCameraPreset] =
+  const [cameraPreset, setCameraPresetState] =
     useState<CameraPreset>('site_overview');
+  // Incrémenté à chaque clic : recliquer sur la vue déjà active recadre la caméra
+  const [cameraPresetNonce, setCameraPresetNonce] = useState(0);
+  const setCameraPreset = (preset: CameraPreset) => {
+    setCameraPresetState(preset);
+    setCameraPresetNonce((n) => n + 1);
+  };
   const [explodedFactor, setExplodedFactor] = useState<number>(0);
   const [pulseSpeed, setPulseSpeed] = useState<number>(1.2);
   const [showPathways, setShowPathways] = useState<boolean>(true);
   const [showLabels3D, setShowLabels3D] = useState<boolean>(true);
-  const [dockCollapsed, setDockCollapsed] = useState<boolean>(false);
+  // Sur petit écran, le dock replié laisse voir la scène 3D
+  const [dockCollapsed, setDockCollapsed] = useState<boolean>(
+    () => window.innerWidth < 768
+  );
 
   const [activeOverlay, setActiveOverlay] = useState<ActiveOverlay>('none');
   const [planModalTab, setPlanModalTab] = useState<PlanModalTab>('logical_physical');
@@ -227,7 +236,15 @@ export default function App() {
 
     const isSameRoom = srcRoom?.id === dstRoom?.id;
     const isMmr = srcRoom?.type === 'mmr' && dstRoom?.type === 'mmr';
-    const codeNum = String(site.fibers.length + 1).padStart(3, '0');
+    // Numéro libre : fibers.length + 1 redonnait un code déjà pris après un débranchement
+    let codeSeq = site.fibers.length + 1;
+    const usedCodes = new Set(site.fibers.map((f) => f.code));
+    const codeFor = (n: number) =>
+      kind === 'trunk_cable'
+        ? `CABLE-${trunkCapacity}-${String(n).padStart(3, '0')}`
+        : kind === 'cross_connect_jumper'
+        ? `JAR-XC-${String(n).padStart(3, '0')}`
+        : `JAR-OS2-${String(n).padStart(3, '0')}`;
 
     // Enforce Telecom Rule: If different rooms, it must involve MMR as a Câble Rocade; if same room, Jarretière
     if (!isSameRoom && srcRoom?.type !== 'mmr' && dstRoom?.type !== 'mmr') {
@@ -244,20 +261,19 @@ export default function App() {
       ? 'cross_connect_jumper'
       : 'patch_cord';
 
+    // Capacité de la rocade : celle du tiroir d'extrémité (12FO côté client, 24FO côté opérateur)
+    const trunkCapacity = srcEq.trunkCapacity || dstEq.trunkCapacity || '24FO';
+    while (usedCodes.has(codeFor(codeSeq))) codeSeq++;
+
     const newFiber: FiberConnection = {
       id: `fib-3d-${Date.now()}`,
       name:
         kind === 'trunk_cable'
-          ? `Câble Fibre Rocade 24FO (${srcRack?.code} → ${dstRack?.code})`
+          ? `Câble Fibre Rocade ${trunkCapacity} (${srcRack?.code} → ${dstRack?.code})`
           : kind === 'cross_connect_jumper'
           ? `Jarretière Cross-Connect MMR Bi-Fibre (${srcEq.code} ${srcPort.label} ↔ ${dstEq.code} ${dstPort.label})`
           : `Jarretière Optique Intra-Salle Bi-Fibre (${srcEq.code} ${srcPort.label} → ${dstEq.code} ${dstPort.label})`,
-      code:
-        kind === 'trunk_cable'
-          ? `CABLE-24FO-${codeNum}`
-          : kind === 'cross_connect_jumper'
-          ? `JAR-XC-${codeNum}`
-          : `JAR-OS2-${codeNum}`,
+      code: codeFor(codeSeq),
       kind,
       sourceEquipmentId: srcEq.id,
       sourcePortId: srcPort.id,
@@ -265,9 +281,9 @@ export default function App() {
       targetPortId: dstPort.id,
       fiberMode: 'OS2',
       polarity: 'Bi-Fibre (2FO Duplex)',
-      trunkCapacity: kind === 'trunk_cable' ? '24FO' : undefined,
+      trunkCapacity: kind === 'trunk_cable' ? trunkCapacity : undefined,
       activeStrandsUsed:
-        kind === 'trunk_cable' ? 'Brins FO #01 & FO #02 sur 24FO' : undefined,
+        kind === 'trunk_cable' ? `Brins FO #01 & FO #02 sur ${trunkCapacity}` : undefined,
       responsibility:
         kind === 'trunk_cable' || isMmr
           ? 'Hébergeur Tiers (Accès Exclusif MMR)'
@@ -297,7 +313,9 @@ export default function App() {
       ],
     };
 
-    handleAddFiber(newFiber, selectedCrossConnectId);
+    // Le brassage direct en 3D crée une liaison indépendante : l'ajouter d'office au
+    // cross-connect affiché faussait son parcours et son bilan optique.
+    handleAddFiber(newFiber);
     setPatchingDraftSource(null);
     setPatchingBannerMsg({
       text: `Brassage 3D créé avec succès : ${newFiber.code} (${srcEq.code} ${srcPort.label} → ${dstEq.code} ${dstPort.label})`,
@@ -501,6 +519,34 @@ export default function App() {
     setRackFocusRequest({ rackId, side, timestamp: Date.now() });
   };
 
+  const navItems: { overlay: ActiveOverlay; href: string; label: string }[] = [
+    { overlay: 'none', href: '#vue-3d', label: 'Vue 3D Spatiale' },
+    { overlay: 'plan_2d', href: '#plan-2d', label: 'Plan 2D & Calepinage' },
+    { overlay: 'patching', href: '#brassage', label: 'Brassage & Câblage' },
+    { overlay: 'library', href: '#bibliotheque', label: 'Bibliothèque & Stocks' },
+    { overlay: 'editor', href: '#editeur', label: 'Éditeur & Attributs' },
+  ];
+  const navLinks = navItems.map((item) => (
+    <a
+      key={item.href}
+      href={item.href}
+      onClick={(e) => {
+        e.preventDefault();
+        if (item.overlay === 'plan_2d') setPlanModalTab('logical_physical');
+        setActiveOverlay(
+          item.overlay !== 'none' && activeOverlay === item.overlay ? 'none' : item.overlay
+        );
+      }}
+      className={`hover:text-white transition-colors whitespace-nowrap shrink-0 py-1 border-b-2 ${
+        activeOverlay === item.overlay
+          ? 'border-amber-400 text-white'
+          : 'border-transparent'
+      }`}
+    >
+      {item.label}
+    </a>
+  ));
+
   return (
     <div className="relative w-screen h-screen flex flex-col bg-slate-950 text-slate-100 overflow-hidden select-none">
       {/* ===================================================================== */}
@@ -522,79 +568,7 @@ export default function App() {
 
         {/* Zone 2: 5 concise single-line text navigation links */}
         <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-300">
-          <a
-            href="#vue-3d"
-            onClick={(e) => {
-              e.preventDefault();
-              setActiveOverlay('none');
-            }}
-            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 py-1 border-b-2 ${
-              activeOverlay === 'none'
-                ? 'border-amber-400 text-white'
-                : 'border-transparent'
-            }`}
-          >
-            Vue 3D Spatiale
-          </a>
-          <a
-            href="#plan-2d"
-            onClick={(e) => {
-              e.preventDefault();
-              setPlanModalTab('logical_physical');
-              setActiveOverlay(activeOverlay === 'plan_2d' ? 'none' : 'plan_2d');
-            }}
-            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 py-1 border-b-2 ${
-              activeOverlay === 'plan_2d'
-                ? 'border-amber-400 text-white'
-                : 'border-transparent'
-            }`}
-          >
-            Plan 2D &amp; Calepinage
-          </a>
-          <a
-            href="#brassage"
-            onClick={(e) => {
-              e.preventDefault();
-              setActiveOverlay(
-                activeOverlay === 'patching' ? 'none' : 'patching'
-              );
-            }}
-            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 py-1 border-b-2 ${
-              activeOverlay === 'patching'
-                ? 'border-amber-400 text-white'
-                : 'border-transparent'
-            }`}
-          >
-            Brassage &amp; Câblage
-          </a>
-          <a
-            href="#bibliotheque"
-            onClick={(e) => {
-              e.preventDefault();
-              setActiveOverlay(activeOverlay === 'library' ? 'none' : 'library');
-            }}
-            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 py-1 border-b-2 ${
-              activeOverlay === 'library'
-                ? 'border-amber-400 text-white'
-                : 'border-transparent'
-            }`}
-          >
-            Bibliothèque &amp; Stocks
-          </a>
-          <a
-            href="#editeur"
-            onClick={(e) => {
-              e.preventDefault();
-              setActiveOverlay(activeOverlay === 'editor' ? 'none' : 'editor');
-            }}
-            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 py-1 border-b-2 ${
-              activeOverlay === 'editor'
-                ? 'border-amber-400 text-white'
-                : 'border-transparent'
-            }`}
-          >
-            Éditeur &amp; Attributs
-          </a>
+          {navLinks}
         </nav>
 
         {/* Zone 3: 1 primary action */}
@@ -643,6 +617,11 @@ export default function App() {
         </div>
       </header>
 
+      {/* Navigation mobile : la barre du haut masque les liens sous 768 px */}
+      <nav className="md:hidden flex items-center gap-5 overflow-x-auto px-4 py-2 text-xs font-medium text-slate-300 bg-slate-950 border-b border-slate-800 z-30 shrink-0">
+        {navLinks}
+      </nav>
+
       {/* ===================================================================== */}
       {/* MAIN 3D SPATIAL VIEWPORT                                              */}
       {/* ===================================================================== */}
@@ -653,6 +632,7 @@ export default function App() {
           onSelectEntity={handleSelectEntity}
           highlightedFiberIds={highlightedFiberIds}
           cameraPreset={cameraPreset}
+          cameraPresetNonce={cameraPresetNonce}
           explodedFactor={explodedFactor}
           pulseSpeed={pulseSpeed}
           showPathways={showPathways}

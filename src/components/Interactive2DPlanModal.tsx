@@ -85,6 +85,7 @@ export const Interactive2DPlanModal: React.FC<Interactive2DPlanModalProps> = ({
   // Spacious 2D coordinate mapping
   const mapX = (xM: number) => Math.round(560 + xM * 48);
   const mapZ = (zM: number) => Math.round(225 + zM * 34);
+  const TRUNK_CTRL_Y = 30; // point de contrôle des rocades, au-dessus du haut des salles (y≈82)
 
   // Compute SVG viewBox dynamically if user zooms on a single room in 2D
   const zoomedRoomObj = site.rooms.find((r) => r.id === zoomRoom2D);
@@ -372,15 +373,6 @@ export const Interactive2DPlanModal: React.FC<Interactive2DPlanModalProps> = ({
                             fill={rm.colorHex}
                             fillOpacity={0.2}
                           />
-                          <text
-                            x={rx + 14}
-                            y={ry + 20}
-                            fill="#f8fafc"
-                            fontSize="12"
-                            fontWeight="700"
-                          >
-                            {rm.code} — {rm.type === 'mmr' ? 'Zone Hébergeur Tiers' : rm.type === 'operator' ? 'POP SFR (Rocade 24FO)' : 'Espace Client (Rocade 12FO)'}
-                          </text>
 
                           {/* Central Front Patching Aisle Band inside each Room */}
                           <rect
@@ -396,7 +388,7 @@ export const Interactive2DPlanModal: React.FC<Interactive2DPlanModalProps> = ({
                           />
                           <text
                             x={rx + rw / 2}
-                            y={mapZ(0) + 4}
+                            y={mapZ(0) + 19}
                             textAnchor="middle"
                             fill="#64748b"
                             fontSize="9"
@@ -450,14 +442,16 @@ export const Interactive2DPlanModal: React.FC<Interactive2DPlanModalProps> = ({
                       // Trunk cables connect to the REAR (North side y - 30) of the racks!
                       // Jarretières connect to the FRONT (South side y + 30) of the racks!
                       const pathD = isTrunk
-                        ? `M ${x1} ${y1 - 30} C ${x1} ${y1 - 85}, ${x2} ${y2 - 85}, ${x2} ${y2 - 30}`
+                        ? `M ${x1} ${y1 - 30} C ${x1} ${TRUNK_CTRL_Y}, ${x2} ${TRUNK_CTRL_Y}, ${x2} ${y2 - 30}`
                         : rkA.id === rkB.id
                         ? `M ${x1 - 18} ${y1 + 30} C ${x1 - 45} ${y1 + 72}, ${x1 + 45} ${y1 + 72}, ${x1 + 18} ${y1 + 30}`
                         : `M ${x1} ${y1 + 30} C ${x1} ${y1 + 78}, ${x2} ${y2 + 78}, ${x2} ${y2 + 30}`;
 
                       const midX = Math.round((x1 + x2) / 2);
+                      // Rocades : étiquette au sommet de la courbe, au-dessus des salles
+                      // (avant, elle recouvrait le titre des salles).
                       const labelY = isTrunk
-                        ? Math.min(y1, y2) - 66
+                        ? Math.round((y1 - 30 + y2 - 30) / 8 + (TRUNK_CTRL_Y * 3) / 4)
                         : Math.max(y1, y2) + 64;
 
                       return (
@@ -517,6 +511,24 @@ export const Interactive2DPlanModal: React.FC<Interactive2DPlanModalProps> = ({
                         </g>
                       );
                     })}
+
+                    {/* Titres des salles au-dessus des fibres, avec un liseré sombre pour rester lisibles */}
+                    {site.rooms.map((rm) => (
+                      <text
+                        key={`${rm.id}-title`}
+                        x={mapX(rm.bounds.x - rm.bounds.width / 2) + 14}
+                        y={mapZ(rm.bounds.z - rm.bounds.depth / 2) + 20}
+                        fill="#f8fafc"
+                        fontSize="12"
+                        fontWeight="700"
+                        stroke="#090d16"
+                        strokeWidth={4}
+                        paintOrder="stroke"
+                        className="pointer-events-none"
+                      >
+                        {rm.code} — {rm.type === 'mmr' ? 'Zone Hébergeur Tiers' : rm.type === 'operator' ? 'POP SFR (Rocade 24FO)' : 'Espace Client (Rocade 12FO)'}
+                      </text>
+                    ))}
 
                     {/* 3. RACKS: 1:1 SQUARE TILE 60x60cm WITH EXPLICIT BAIE AVANT & BAIE ARRIÈRE BARS */}
                     {site.racks.map((rk) => {
