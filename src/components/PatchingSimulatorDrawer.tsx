@@ -22,6 +22,7 @@ import {
   ResponsibilityOwner,
 } from '../types/telecom';
 import { calculateSegmentLossDb } from '../utils/opticalCalculations';
+import { trunkJacketHex } from '../utils/fiberColors';
 
 interface PatchingSimulatorDrawerProps {
   site: TelecomSite;
@@ -212,7 +213,7 @@ export const PatchingSimulatorDrawer: React.FC<PatchingSimulatorDrawerProps> = (
       responsibility = 'Hébergeur Tiers (Accès Exclusif MMR)';
     } else if (cableKind === 'trunk_cable') {
       codePrefix = `CABLE-${trunkCapacity}`;
-      jacketHex = '#0284c7';
+      jacketHex = trunkJacketHex(sourceRoom?.type, targetRoom?.type);
       responsibility = 'Hébergeur Tiers (Accès Exclusif MMR)';
     } else {
       codePrefix = sourceRoom?.type === 'operator' ? 'JAR-SFR' : 'JAR-CLI';

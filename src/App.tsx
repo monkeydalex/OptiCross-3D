@@ -48,6 +48,7 @@ import {
 import { PatchingSimulatorDrawer } from './components/PatchingSimulatorDrawer';
 import { LibraryInventoryModal } from './components/LibraryInventoryModal';
 import { EntityEditorDrawer } from './components/EntityEditorDrawer';
+import { trunkJacketHex } from './utils/fiberColors';
 import {
   downloadPdfEngineeringReport,
   downloadSvgEngineeringDiagram,
@@ -294,7 +295,7 @@ export default function App() {
       connectorB: dstPort.connector,
       JacketColorHex:
         kind === 'trunk_cable'
-          ? '#0284c7'
+          ? trunkJacketHex(srcRoom?.type, dstRoom?.type)
           : kind === 'cross_connect_jumper'
           ? '#f59e0b'
           : '#facc15',

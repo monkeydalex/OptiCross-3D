@@ -10,6 +10,7 @@ import {
   Rack,
   FiberConnection,
 } from '../types/telecom';
+import { CROSS_CONNECT_HEX, fiberZoneHex } from '../utils/fiberColors';
 
 export type CameraPreset =
   | 'site_overview'
@@ -71,9 +72,6 @@ const _rightVec = new THREE.Vector3();
 const _moveVec = new THREE.Vector3();
 const _yAxis = new THREE.Vector3(0, 1, 0);
 
-// Couleur de mise en évidence de la route sélectionnée : cyan, pour trancher
-// avec le jaune des jarretières et des chemins de câbles.
-const ROUTE_GLOW_COLOR = 0x22d3ee;
 const PULSES_PER_FIBER = 3;
 
 function createLabelCanvasTexture(
@@ -179,6 +177,7 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
   const [webglLost, setWebglLost] = useState(false);
   const [mouseLeftMode, setMouseLeftMode] = useState<'orbit' | 'pan'>('orbit');
   const [viewSide, setViewSide] = useState<'front' | 'rear'>('front');
+  const [navPanelOpen, setNavPanelOpen] = useState(true);
   const pressedKeysRef = useRef<Set<string>>(new Set());
 
   const stateRef = useRef({
@@ -242,6 +241,7 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
     interactables: THREE.Object3D[];
     pulseRunners: PulseRunner[];
     routeGlowMaterials: THREE.MeshBasicMaterial[];
+    routeBeacons: THREE.Object3D[];
     explodables: ExplodablePart[];
     pathwayGroup: THREE.Group | null;
     labelsGroup: THREE.Group | null;
@@ -255,6 +255,7 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
     interactables: [],
     pulseRunners: [],
     routeGlowMaterials: [],
+    routeBeacons: [],
     explodables: [],
     pathwayGroup: null,
     labelsGroup: null,
@@ -760,6 +761,11 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
       for (let i = 0; i < glowMats.length; i++) {
         glowMats[i].opacity = glowMats[i].userData.baseOpacity * glowFactor;
       }
+      const beacons = sceneObjectsRef.current.routeBeacons;
+      const beaconScale = 1 + 0.35 * Math.sin(elapsed * 4);
+      for (let i = 0; i < beacons.length; i++) {
+        beacons[i].scale.setScalar(beaconScale);
+      }
 
       renderer.render(scene, camera);
     };
@@ -1245,8 +1251,14 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
         // If this is a Patch Panel (Tiroir Optique 24FO / 12FO), add a Rear Breakout Box (Boîtier d'épanouissement arrière pour Câble Rocade)
         if (eq.category === 'patch_panel') {
           const rearBreakoutGeo = new THREE.BoxGeometry(0.18, eqHeightM * 0.85, 0.1);
+          // Couleur de la rocade raccordée à l'arrière (bleu opérateur / vert client)
+          const rearTrunk = site.fibers.find(
+            (f) =>
+              f.kind === 'trunk_cable' &&
+              (f.sourceEquipmentId === eq.id || f.targetEquipmentId === eq.id)
+          );
           const rearBreakoutMat = new THREE.MeshStandardMaterial({
-            color: 0x0284c7,
+            color: new THREE.Color(rearTrunk?.JacketColorHex ?? '#0284c7'),
             roughness: 0.35,
             metalness: 0.7,
           });
@@ -1497,6 +1509,7 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
 
     const pathwayExplodeY = 0.65 * explodedFactor;
     const routeGlowMaterials: THREE.MeshBasicMaterial[] = [];
+    const routeBeacons: THREE.Object3D[] = [];
 
     site.fibers.forEach((fiber: FiberConnection, fibIdx: number) => {
       const srcInfo = portWorldPositions.get(`${fiber.sourceEquipmentId}/${fiber.sourcePortId}`);
@@ -1594,7 +1607,7 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
           : fiber.kind === 'cross_connect_jumper'
           ? `JARRETIÈRE CROSS-CONNECT MMR (${fiber.polarity})`
           : `JARRETIÈRE OPTIQUE INTRA-SALLE (${fiber.polarity})`,
-        badgeColor: isTrunkCable ? '#0284c7' : '#eab308',
+        badgeColor: isTrunkCable ? fiber.JacketColorHex : '#eab308',
         title: fiber.name,
         subtitle: `${fiber.code} · Monomode OS2 · ${fiber.polarity} · ${fiber.lengthMeters} m · -${fiber.attenuationDb} dB`,
         meta: `Responsabilité : ${fiber.responsibility}${
@@ -1657,7 +1670,7 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
           const labelTex = createLabelCanvasTexture(
             `CÂBLE ROCADE ${fiber.trunkCapacity || '24FO'} OS2`,
             `Déployé par l'Hébergeur Tiers (Accès MMR)`,
-            '#0284c7',
+            fiber.JacketColorHex,
             maxAnisotropy,
             520,
             115
@@ -1717,15 +1730,20 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
         }
       }
 
-      // Route sélectionnée : gaine lumineuse cyan + tracé "rayons X" visible à travers
-      // baies et chemins de câbles, puis impulsions lumineuses qui parcourent la fibre.
+      // Route sélectionnée : gaine lumineuse + tracé "rayons X" visible à travers baies
+      // et chemins de câbles, puis impulsions lumineuses. La couleur suit la zone traversée
+      // (bleu opérateur → ambre cross-connect MMR → vert client) pour lire le parcours.
+      const zoneColor = new THREE.Color(fiberZoneHex(site, fiber));
+      const isCrossConnect = fiber.kind === 'cross_connect_jumper';
       if (isHighlighted || isSelected) {
-        const coreRadius = isTrunkCable ? 0.042 : 0.03;
+        const coreRadius = isTrunkCable ? 0.042 : isCrossConnect ? 0.04 : 0.03;
         const glowMat = new THREE.MeshBasicMaterial({
-          color: ROUTE_GLOW_COLOR,
+          color: zoneColor,
           transparent: true,
-          opacity: isSelected ? 0.5 : 0.35,
-          blending: THREE.AdditiveBlending,
+          opacity: isSelected || isCrossConnect ? 0.5 : 0.32,
+          // Mélange normal et sans tone mapping : la teinte de la zone reste franche
+          // (le mélange additif la blanchissait, le vert virait au cyan).
+          toneMapped: false,
           depthWrite: false,
         });
         glowMat.userData.baseOpacity = glowMat.opacity;
@@ -1738,9 +1756,10 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
         routeGlowMaterials.push(glowMat);
 
         const xrayMat = new THREE.MeshBasicMaterial({
-          color: ROUTE_GLOW_COLOR,
+          color: zoneColor,
           transparent: true,
-          opacity: 0.3,
+          opacity: isCrossConnect ? 0.5 : 0.3,
+          toneMapped: false,
           depthTest: false,
           depthWrite: false,
         });
@@ -1750,6 +1769,43 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
         );
         xrayMesh.renderOrder = 3;
         dynamicRoot.add(xrayMesh);
+      }
+
+      // Interconnexion en salle MMR : c'est le cœur du cross-connect. Balises ambre sur les
+      // deux tiroirs reliés et panneau flottant au-dessus de la jarretière.
+      if (isCrossConnect && isHighlighted) {
+        const beaconGeo = new THREE.TorusGeometry(0.07, 0.012, 10, 28);
+        [srcInfo.posFront, dstInfo.posFront].forEach((pt, i) => {
+          const beacon = new THREE.Mesh(
+            beaconGeo,
+            new THREE.MeshBasicMaterial({ color: CROSS_CONNECT_HEX, depthTest: false })
+          );
+          beacon.position.copy(pt);
+          beacon.position.z += 0.02 * (i === 0 ? srcInfo.frontDir : dstInfo.frontDir);
+          beacon.renderOrder = 4;
+          dynamicRoot.add(beacon);
+          routeBeacons.push(beacon);
+        });
+
+        const xc = site.crossConnects.find((c) => c.fiberIds.includes(fiber.id));
+        const topPt = curve.getPointAt(0.5);
+        const xcTex = createLabelCanvasTexture(
+          'INTERCONNEXION CROSS-CONNECT',
+          `${xc?.reference ?? fiber.code} · Opérateur ↔ Client`,
+          CROSS_CONNECT_HEX,
+          maxAnisotropy,
+          520,
+          115
+        );
+        const xcSign = new THREE.Mesh(
+          new THREE.PlaneGeometry(1.6, 0.36),
+          new THREE.MeshBasicMaterial({ map: xcTex, side: THREE.DoubleSide, depthTest: false })
+        );
+        xcSign.position.set(topPt.x, topPt.y + 0.42, topPt.z);
+        xcSign.renderOrder = 5;
+        xcSign.userData = userDataPayload;
+        labelsGroup.add(xcSign);
+        interactables.push(xcSign);
       }
 
       if (isHighlighted) {
@@ -1762,7 +1818,7 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
           const haloMesh = new THREE.Mesh(
             new THREE.SphereGeometry(0.075, 12, 12),
             new THREE.MeshBasicMaterial({
-              color: ROUTE_GLOW_COLOR,
+              color: zoneColor,
               transparent: true,
               opacity: 0.55,
               blending: THREE.AdditiveBlending,
@@ -1787,6 +1843,7 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
     sceneObjectsRef.current.pulseRunners = pulseRunners;
     sceneObjectsRef.current.explodables = explodables;
     sceneObjectsRef.current.routeGlowMaterials = routeGlowMaterials;
+    sceneObjectsRef.current.routeBeacons = routeBeacons;
 
     renderer.compile(scene, camera);
   }, [site, highlightedFiberIds, selectedEntity, patchingDraftSource, isPatchingMode, explodedFactor]);
@@ -1824,13 +1881,35 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
             </div>
           </div>
           <div className="flex items-start gap-2 pt-1 border-t border-slate-800/80">
-            <span className="w-3.5 h-2.5 rounded-xs bg-sky-500 border border-amber-400 mt-1 shrink-0" />
+            <span className="w-3.5 h-2.5 rounded-xs bg-sky-600 mt-1 shrink-0" />
             <div>
               <span className="font-semibold text-sky-400">
-                Baie ARRIÈRE : Câbles Rocades (24FO / 12FO)
+                Baie ARRIÈRE : Rocade 24FO côté Opérateur
               </span>
               <p className="text-slate-400 leading-tight">
-                Fond de baie · Arrivée des câbles inter-salles (Hébergeur Tiers).
+                Câble inter-salles Salle Opérateur → MMR (Hébergeur Tiers).
+              </p>
+            </div>
+          </div>
+          <div className="flex items-start gap-2">
+            <span className="w-3.5 h-2.5 rounded-xs bg-emerald-600 mt-1 shrink-0" />
+            <div>
+              <span className="font-semibold text-emerald-400">
+                Baie ARRIÈRE : Rocade 12FO côté Client
+              </span>
+              <p className="text-slate-400 leading-tight">
+                Câble inter-salles Salle Client → MMR (Hébergeur Tiers).
+              </p>
+            </div>
+          </div>
+          <div className="flex items-start gap-2 pt-1 border-t border-slate-800/80">
+            <span className="w-3.5 h-2.5 rounded-full bg-amber-400 ring-2 ring-amber-400/40 mt-1 shrink-0" />
+            <div>
+              <span className="font-semibold text-amber-300">
+                Salle MMR : Interconnexion Cross-Connect
+              </span>
+              <p className="text-slate-400 leading-tight">
+                Jarretière posée par l&apos;Hébergeur entre la baie Opérateur et la baie Client.
               </p>
             </div>
           </div>
@@ -1840,14 +1919,32 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
       {/* ===================================================================== */}
       {/* FLOATING 3D NAVIGATION CONTROLLER (D-PAD + AVANT/ARRIÈRE + ORBIT/PAN) */}
       {/* ===================================================================== */}
+      {!navPanelOpen && (
+        <button
+          onClick={() => setNavPanelOpen(true)}
+          className="pointer-events-auto absolute bottom-56 right-6 z-20 hidden md:flex items-center gap-1.5 px-3 py-1.5 bg-slate-900/95 border border-slate-700 rounded-lg shadow-xl text-xs font-semibold text-slate-200 hover:text-white"
+        >
+          <span className="text-amber-400">✥</span>
+          Pilotage 3D
+        </button>
+      )}
+      {navPanelOpen && (
       <div className="pointer-events-auto absolute bottom-56 right-6 z-20 hidden md:block bg-slate-900/95 backdrop-blur-md border border-slate-700 rounded-xl p-3 shadow-2xl w-64 space-y-2.5">
-        <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
+        <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-1.5">
           <span className="text-xs font-bold text-slate-100">
             Pilotage Navigation 3D
           </span>
-          <span className="text-[10px] font-mono text-amber-400">
+          <span className="text-[10px] font-mono text-amber-400 ml-auto">
             Clavier ZQSD / Flèches
           </span>
+          <button
+            onClick={() => setNavPanelOpen(false)}
+            title="Masquer le panneau de pilotage"
+            aria-label="Masquer le panneau de pilotage"
+            className="w-5 h-5 flex items-center justify-center rounded text-slate-400 hover:text-white hover:bg-slate-800"
+          >
+            ✕
+          </button>
         </div>
 
         {/* 1-Click Switch: Vue Baie AVANT vs Vue Baie ARRIÈRE */}
@@ -1974,6 +2071,7 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
           Astuce : <strong>Double-cliquez</strong> sur une baie ou un tiroir 3D pour y voler directement.
         </div>
       </div>
+      )}
 
       {/* Raycast Hover Tooltip */}
       {hoverTooltip && (

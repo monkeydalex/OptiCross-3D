@@ -302,9 +302,13 @@ export const Interactive2DPlanModal: React.FC<Interactive2DPlanModalProps> = ({
                 <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-2.5 bg-slate-900/90 border border-slate-800 rounded-lg text-xs">
                   <div className="flex flex-wrap items-center gap-5">
                     <span className="flex items-center gap-2">
-                      <span className="w-6 h-2.5 rounded-xs bg-sky-500 inline-block" />
-                      <strong className="text-sky-300">Câble Fibre Rocade (24FO / 12FO)</strong>
-                      <span className="text-slate-400">→ Branché en <strong className="text-sky-300">BAIE ARRIÈRE</strong></span>
+                      <span className="w-6 h-2.5 rounded-xs bg-sky-600 inline-block" />
+                      <strong className="text-sky-300">Rocade 24FO côté Opérateur</strong>
+                    </span>
+                    <span className="flex items-center gap-2">
+                      <span className="w-6 h-2.5 rounded-xs bg-emerald-600 inline-block" />
+                      <strong className="text-emerald-300">Rocade 12FO côté Client</strong>
+                      <span className="text-slate-400">→ Branchées en <strong className="text-slate-200">BAIE ARRIÈRE</strong></span>
                     </span>
                     <span className="flex items-center gap-2">
                       <span className="w-6 h-1.5 rounded-full bg-amber-400 inline-block" />
@@ -464,16 +468,16 @@ export const Interactive2DPlanModal: React.FC<Interactive2DPlanModalProps> = ({
                             <path
                               d={pathD}
                               fill="none"
-                              stroke="#0369a1"
+                              stroke={fib.JacketColorHex}
                               strokeWidth={isActive ? 9 : 4}
-                              strokeOpacity={isActive ? 0.9 : 0.35}
+                              strokeOpacity={isActive ? 0.35 : 0.2}
                             />
                           )}
                           <path
                             d={pathD}
                             fill="none"
                             stroke={isActive ? fib.JacketColorHex : '#475569'}
-                            strokeWidth={isTrunk ? (isActive ? 4.5 : 2) : isActive ? 3.5 : 1.5}
+                            strokeWidth={isTrunk ? (isActive ? 4.5 : 2) : isActive ? (fib.kind === 'cross_connect_jumper' ? 5 : 3.5) : 1.5}
                             strokeDasharray={!isTrunk && fib.polarity.includes('Mono') ? '6,4' : undefined}
                             strokeOpacity={isActive ? 1 : 0.4}
                           />
@@ -487,8 +491,8 @@ export const Interactive2DPlanModal: React.FC<Interactive2DPlanModalProps> = ({
                                 width={156}
                                 height={22}
                                 rx={5}
-                                fill={isTrunk ? '#082f49' : '#451a03'}
-                                stroke={isTrunk ? '#38bdf8' : '#f59e0b'}
+                                fill="#090d16"
+                                stroke={isTrunk ? fib.JacketColorHex : '#f59e0b'}
                                 strokeWidth={1.3}
                               />
                               <text

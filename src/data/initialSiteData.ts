@@ -610,7 +610,7 @@ export const INITIAL_TELECOM_SITE: TelecomSite = {
       responsibility: 'Hébergeur Tiers (Accès Exclusif MMR)',
       connectorA: 'LC/APC',
       connectorB: 'LC/APC',
-      JacketColorHex: '#0284c7', // Bleu structuré Câble Rocade Multi-Fibre
+      JacketColorHex: '#059669', // Vert : rocade côté salle client
       lengthMeters: 38.0,
       pathwayIds: ['path-main-spine', 'path-cl-branch'],
       attenuationDb: 0.39,
@@ -742,7 +742,7 @@ export const INITIAL_TELECOM_SITE: TelecomSite = {
       responsibility: 'Hébergeur Tiers (Accès Exclusif MMR)',
       connectorA: 'LC/APC',
       connectorB: 'LC/APC',
-      JacketColorHex: '#0284c7',
+      JacketColorHex: '#059669', // Vert : rocade côté salle client
       lengthMeters: 38.0,
       pathwayIds: ['path-main-spine', 'path-cl-branch'],
       attenuationDb: 0.38,
