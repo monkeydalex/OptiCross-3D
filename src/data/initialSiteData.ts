@@ -63,7 +63,7 @@ export const INITIAL_TELECOM_SITE: TelecomSite = {
       customAttributes: [
         { id: 'ro-1', key: 'Opérateur Présent', value: 'SFR Business / Réseau Optique National' },
         { id: 'ro-2', key: 'Rocade Sortante vers MMR', value: 'Câble 24FO OS2 Monomode (Responsabilité Hébergeur Tiers)' },
-        { id: 'ro-3', key: 'Brassage Local', value: 'Jarretières OS2 entre Équipement Actif SFR et Tiroir 24FO' },
+        { id: 'ro-3', key: 'Brassage Local', value: 'Jarretières OS2 : PE-SFR-01 → SWAG-SFR-01 (uplink), puis SWAG → Tiroir 24FO' },
       ],
     },
     {
@@ -121,7 +121,7 @@ export const INITIAL_TELECOM_SITE: TelecomSite = {
         footprintMm: '600 × 600 mm (1 Dalle entière 60×60 cm — Sans demi-baie)',
         aisleType: 'Allée Centrale de Brassage (Accès Baie Avant)',
         orientationLabel: 'Baie Avant au Sud (Allée) · Baie Arrière au Nord (Rocade)',
-        frontFaceLabel: 'Baie Avant (Sud) — Brassage Jarretières OS2 (Routeur ↔ Tiroir 24FO)',
+        frontFaceLabel: 'Baie Avant (Sud) — Brassage Jarretières OS2 (SWAG ↔ Tiroir 24FO)',
         rearFaceLabel: 'Baie Arrière (Nord) — Départ Câble Rocade 24FO vers Salle MMR',
         maxFloorLoadKg: 1000,
         allocatedPowerKw: 4.5,
@@ -136,7 +136,7 @@ export const INITIAL_TELECOM_SITE: TelecomSite = {
     {
       id: 'rack-op-02',
       roomId: 'room-operator',
-      name: 'Baie Opérateur Réserve #02',
+      name: 'Baie Opérateur #02 (Routeur PE)',
       code: 'BAIE-OP-02',
       uTotal: 42,
       position3D: [-7.5, 0, 1.92],
@@ -147,20 +147,20 @@ export const INITIAL_TELECOM_SITE: TelecomSite = {
       calepinage: {
         rowLabel: 'Rangée Sud (Ligne 05)',
         positionInRow: 'Pos 03 (Col C)',
-        zoneLabel: 'Îlot Extension POP',
+        zoneLabel: 'Îlot POP Opérateur SFR — Cœur PE',
         tileColumn: 'C',
         tileRow: 5,
         tileRangeLabel: 'Dalle C-05 (60×60 cm)',
         footprintMm: '600 × 600 mm (1 Dalle entière 60×60 cm — Sans demi-baie)',
         aisleType: 'Allée Centrale de Brassage (Accès Baie Avant)',
         orientationLabel: 'Baie Avant au Nord (Allée) · Baie Arrière au Sud (Rocade)',
-        frontFaceLabel: 'Baie Avant (Nord) — Brassage Jarretières OS2',
+        frontFaceLabel: 'Baie Avant (Nord) — Jarretière Uplink PE-SFR-01 → SWAG-SFR-01',
         rearFaceLabel: 'Baie Arrière (Sud) — Réserve Arrivée Câble Rocade',
         maxFloorLoadKg: 1000,
         allocatedPowerKw: 3.0,
       },
       customAttributes: [
-        { id: 'rkop2-1', key: 'Rôle', value: 'Extension POP Opérateur Monomode OS2' },
+        { id: 'rkop2-1', key: 'Rôle', value: 'Routeur de cœur PE-SFR-01 : alimente un ou plusieurs SWAG par jarretière OS2' },
         { id: 'rkop2-2', key: 'Calepinage 60×60 cm', value: '1 Baie = 1 Dalle entière C-05 (Zéro demi-baie)' },
       ],
     },
@@ -298,7 +298,7 @@ export const INITIAL_TELECOM_SITE: TelecomSite = {
     // --- SALLE OPÉRATEUR : BAIE SFR ---
     {
       id: 'eq-sfr-router',
-      rackId: 'rack-sfr-01',
+      rackId: 'rack-op-02',
       name: 'Routeur Optique PE SFR (10G/100G OS2)',
       code: 'PE-SFR-01',
       category: 'router',
@@ -311,6 +311,27 @@ export const INITIAL_TELECOM_SITE: TelecomSite = {
       customAttributes: [
         { id: 'eq1-1', key: 'Propriétaire', value: 'Opérateur SFR' },
         { id: 'eq1-2', key: 'Interfaces Optiques', value: 'SFP+ 10G-BX BiDi (Mono-Fibre) & QSFP28 100G-LR4 (Bi-Fibre) OS2' },
+        { id: 'eq1-3', key: 'Rôle', value: 'Routeur PE (Provider Edge) : alimente un ou plusieurs SWAG' },
+        { id: 'eq1-4', key: 'Liaison Descendante', value: 'P01 → SWAG-SFR-01 P12 (Jarretière Uplink Bi-Fibre)' },
+      ],
+    },
+    {
+      id: 'eq-sfr-swag',
+      rackId: 'rack-sfr-01',
+      name: 'SWAG SFR — Switch d\'Agrégation Opérateur (10G/100G OS2)',
+      code: 'SWAG-SFR-01',
+      category: 'switch',
+      manufacturer: 'Nokia',
+      model: '7250 IXR-e Agrégation Monomode OS2',
+      uPosition: 22,
+      uHeight: 2,
+      colorHex: '#9a3412',
+      ports: createPorts('SWAG-SFR-01', 12, 'LC/UPC', 'transceiver', 1310, false),
+      customAttributes: [
+        { id: 'eq3-1', key: 'Propriétaire', value: 'Opérateur SFR' },
+        { id: 'eq3-2', key: 'Rôle', value: 'Agrégation des services clients, desservi par le PE-SFR-01' },
+        { id: 'eq3-3', key: 'Uplink', value: 'P12 ← PE-SFR-01 P01 (Jarretière Bi-Fibre OS2 inter-baies)' },
+        { id: 'eq3-4', key: 'Ports Services', value: 'P01-P11 vers Tiroir 24FO (Cross-Connect MMR)' },
       ],
     },
     {
@@ -514,11 +535,11 @@ export const INITIAL_TELECOM_SITE: TelecomSite = {
     // Tronçon 1 : JARRETIÈRE INTRA-SALLE OPÉRATEUR (Dans Baie SFR)
     {
       id: 'fib-xc1-hop1',
-      name: 'Jarretière Optique OS2 Bi-Fibre (Baie SFR : Routeur PE-SFR P01 → Tiroir SFR 24FO P01)',
+      name: 'Jarretière Optique OS2 Bi-Fibre (Baie SFR : SWAG-SFR P01 → Tiroir SFR 24FO P01)',
       code: 'JAR-SFR-001',
       kind: 'patch_cord',
-      sourceEquipmentId: 'eq-sfr-router',
-      sourcePortId: 'PE-SFR-01-P01',
+      sourceEquipmentId: 'eq-sfr-swag',
+      sourcePortId: 'SWAG-SFR-01-P01',
       targetEquipmentId: 'eq-sfr-tiroir-24fo',
       targetPortId: 'TIROIR-SFR-24FO-P01',
       fiberMode: 'OS2',
@@ -654,11 +675,11 @@ export const INITIAL_TELECOM_SITE: TelecomSite = {
     // =========================================================================
     {
       id: 'fib-xc2-hop1',
-      name: 'Jarretière Optique OS2 Mono-Fibre (Baie SFR : Routeur PE-SFR P03 → Tiroir SFR 24FO P03)',
+      name: 'Jarretière Optique OS2 Mono-Fibre (Baie SFR : SWAG-SFR P03 → Tiroir SFR 24FO P03)',
       code: 'JAR-SFR-MONO-03',
       kind: 'patch_cord',
-      sourceEquipmentId: 'eq-sfr-router',
-      sourcePortId: 'PE-SFR-01-P03',
+      sourceEquipmentId: 'eq-sfr-swag',
+      sourcePortId: 'SWAG-SFR-01-P03',
       targetEquipmentId: 'eq-sfr-tiroir-24fo',
       targetPortId: 'TIROIR-SFR-24FO-P03',
       fiberMode: 'OS2',
@@ -776,6 +797,36 @@ export const INITIAL_TELECOM_SITE: TelecomSite = {
     },
 
     // =========================================================================
+    // CAS 4 : UPLINK OPÉRATEUR PE → SWAG (Jarretière entre 2 baies de la Salle Opérateur)
+    // Le PE alimente un ou plusieurs SWAG ; le SWAG porte ensuite les services clients.
+    // =========================================================================
+    {
+      id: 'fib-pe-swag-uplink',
+      name: 'Jarretière Uplink OS2 Bi-Fibre (Baie Opérateur #02 : PE-SFR-01 P01 → Baie SFR : SWAG-SFR-01 P12)',
+      code: 'JAR-UPLINK-PE-SWAG-01',
+      kind: 'patch_cord',
+      sourceEquipmentId: 'eq-sfr-router',
+      sourcePortId: 'PE-SFR-01-P01',
+      targetEquipmentId: 'eq-sfr-swag',
+      targetPortId: 'SWAG-SFR-01-P12',
+      fiberMode: 'OS2',
+      polarity: 'Bi-Fibre (2FO Duplex)',
+      responsibility: 'Opérateur Télécom (Baie SFR)',
+      connectorA: 'LC/UPC',
+      connectorB: 'LC/UPC',
+      JacketColorHex: '#facc15',
+      lengthMeters: 8.0,
+      pathwayIds: ['path-op-branch'],
+      attenuationDb: 0.32,
+      spliceCount: 0,
+      installedDate: '2025-11-10',
+      customAttributes: [
+        { id: 'f12-1', key: 'Nature Physique', value: 'JARRETIÈRE OPTIQUE INTER-BAIES (Même salle Opérateur, sans passer par la MMR)' },
+        { id: 'f12-2', key: 'Rôle Réseau', value: 'Uplink 100G : le PE alimente le SWAG qui agrège les services clients' },
+      ],
+    },
+
+    // =========================================================================
     // CAS 3 : JARRETIÈRE INTRA-SALLE ENTRE 2 BAIES DE LA MÊME SALLE CLIENT (OS2)
     // =========================================================================
     {
@@ -855,6 +906,22 @@ export const INITIAL_TELECOM_SITE: TelecomSite = {
       active: true,
       customAttributes: [
         { id: 'xc3-a1', key: 'Différence Jarretière / Câble', value: 'Même salle = Jarretière directe entre baies sans rocade ni passage MMR' },
+      ],
+    },
+    {
+      id: 'xc-uplink-pe-swag',
+      name: 'Uplink Opérateur PE ↔ SWAG (Baie Opérateur #02 ↔ Baie SFR)',
+      reference: 'UPLINK-PE-SWAG-01',
+      orderNumber: 'BRASSAGE-LOCAL-OPERATEUR',
+      polarity: 'Bi-Fibre (2FO Duplex)',
+      clientName: 'Sans Objet (Liaison interne Opérateur)',
+      operatorName: 'Salle Opérateur — PE-SFR-01 → SWAG-SFR-01',
+      serviceType: '100GBASE-LR4 Uplink PE → SWAG OS2 Monomode (1310 nm)',
+      wavelengthNm: 1310,
+      fiberIds: ['fib-pe-swag-uplink'],
+      active: true,
+      customAttributes: [
+        { id: 'xc4-a1', key: 'Architecture', value: 'Le PE alimente un ou plusieurs SWAG ; les cross-connects clients partent du SWAG' },
       ],
     },
   ],

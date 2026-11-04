@@ -101,7 +101,7 @@ export const PatchingSimulatorDrawer: React.FC<PatchingSimulatorDrawerProps> = (
       setSpliceCount(0);
       setSelectedPathwayId('path-mmr-loop');
     } else if (kind === 'patch_cord') {
-      setSourceEqId('eq-sfr-router');
+      setSourceEqId('eq-sfr-swag');
       setTargetEqId('eq-sfr-tiroir-24fo');
       setLengthMeters(2.5);
       setSpliceCount(0);
