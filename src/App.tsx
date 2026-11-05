@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import {
   ChevronDown,
   ChevronUp,
+  Maximize2,
   Eye,
   EyeOff,
   Cable,
@@ -56,6 +57,29 @@ import {
 
 type ActiveOverlay = 'none' | 'plan_2d' | 'patching' | 'library' | 'editor' | 'export_menu';
 
+// Panneaux d'information superposés à la scène 3D, masquables un par un ou tous
+// d'un coup (mode immersif). Le choix est mémorisé dans le navigateur.
+type PanelKey = 'info' | 'legend' | 'nav' | 'dock';
+type PanelsVisibility = Record<PanelKey, boolean>;
+const PANELS_STORAGE_KEY = 'opticross3d.panels';
+
+function loadPanelsVisibility(): PanelsVisibility {
+  // Sur petit écran, le bandeau du circuit masquerait la scène : replié par défaut
+  const isWide = window.innerWidth >= 768;
+  const defaults: PanelsVisibility = {
+    info: isWide,
+    legend: true,
+    nav: true,
+    dock: isWide,
+  };
+  try {
+    const raw = localStorage.getItem(PANELS_STORAGE_KEY);
+    return raw ? { ...defaults, ...JSON.parse(raw) } : defaults;
+  } catch {
+    return defaults;
+  }
+}
+
 export default function App() {
   const [site, setSite] = useState<TelecomSite>(() =>
     syncSitePortStatuses(INITIAL_TELECOM_SITE)
@@ -84,10 +108,30 @@ export default function App() {
   const [pulseSpeed, setPulseSpeed] = useState<number>(1.2);
   const [showPathways, setShowPathways] = useState<boolean>(true);
   const [showLabels3D, setShowLabels3D] = useState<boolean>(true);
-  // Sur petit écran, le dock replié laisse voir la scène 3D
-  const [dockCollapsed, setDockCollapsed] = useState<boolean>(
-    () => window.innerWidth < 768
-  );
+  const [panels, setPanels] = useState<PanelsVisibility>(loadPanelsVisibility);
+  const setPanel = (key: PanelKey, open: boolean) =>
+    setPanels((prev) => ({ ...prev, [key]: open }));
+  // Le dock fait partie des panneaux mémorisés (replié par défaut sur petit écran)
+  const dockCollapsed = !panels.dock;
+  const setDockCollapsed = (update: boolean | ((prev: boolean) => boolean)) =>
+    setPanels((prev) => ({
+      ...prev,
+      dock: !(typeof update === 'function' ? update(!prev.dock) : update),
+    }));
+  // Mode immersif : masque tout ce qui recouvre la scène, ou réaffiche tout
+  const toggleImmersive = () =>
+    setPanels((prev) => {
+      const show = !(prev.info || prev.legend || prev.nav || prev.dock);
+      return { info: show, legend: show, nav: show, dock: show };
+    });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(PANELS_STORAGE_KEY, JSON.stringify(panels));
+    } catch {
+      // stockage indisponible (navigation privée) : le choix n'est simplement pas mémorisé
+    }
+  }, [panels]);
 
   const [activeOverlay, setActiveOverlay] = useState<ActiveOverlay>('none');
   const [planModalTab, setPlanModalTab] = useState<PlanModalTab>('logical_physical');
@@ -117,13 +161,19 @@ export default function App() {
       ) {
         return;
       }
-      if (e.key.toLowerCase() === 'h') {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const key = e.key.toLowerCase();
+      if (key === 'h') {
         setDockCollapsed((prev) => !prev);
+      } else if (key === 'i') {
+        toggleImmersive();
+      } else if (key === 'l') {
+        setPanels((prev) => ({ ...prev, legend: !prev.legend }));
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
+  });
 
   const highlightedFiberIds = useMemo(() => {
     if (customTracedFiberIds && customTracedFiberIds.length > 0) {
@@ -642,10 +692,42 @@ export default function App() {
           onPortClickForPatching={handlePortClickForPatching}
           isPatchingMode={isPatchingMode}
           rackFocusRequest={rackFocusRequest}
+          showLegend={panels.legend}
+          onSetShowLegend={(open) => setPanel('legend', open)}
+          showNavPanel={panels.nav}
+          onSetShowNavPanel={(open) => setPanel('nav', open)}
         />
 
         {/* Top-Left Spec, 3D Patching Assistant & Quick Port Disconnect Card */}
+        {/* Replié : une pastille résume le circuit. L'assistant de brassage et les messages
+            restent affichés même replié, pour ne jamais perdre une action en cours. */}
+        {!panels.info && !inspectedPort3D && !isPatchingMode && !patchingBannerMsg ? (
+          <button
+            onClick={() => setPanel('info', true)}
+            title="Afficher le détail du circuit"
+            className="pointer-events-auto absolute top-4 left-6 z-20 max-w-[calc(100%-3rem)] md:max-w-md flex items-center gap-2 px-3 py-1.5 bg-slate-900/95 border border-slate-700 rounded-lg shadow-xl text-xs font-mono tabular-nums text-slate-200 hover:text-white"
+          >
+            <ChevronDown className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <span className="truncate text-amber-300 font-semibold">
+              {activeOpticalBudget.title.split(' — ')[0]}
+            </span>
+            <span className="text-slate-500 shrink-0">·</span>
+            <span className="shrink-0">
+              -{activeOpticalBudget.totalAttenuationDb.toFixed(2)} dB
+            </span>
+          </button>
+        ) : (
         <div className="pointer-events-auto absolute top-4 left-6 z-20 bg-slate-900/95 border border-slate-800 rounded-xl px-4 py-3 shadow-xl max-w-xl space-y-2">
+          {panels.info && (
+          <>
+          <button
+            onClick={() => setPanel('info', false)}
+            title="Replier le bandeau du circuit"
+            aria-label="Replier le bandeau du circuit"
+            className="float-right -mr-1 -mt-0.5 ml-2 w-5 h-5 flex items-center justify-center rounded text-slate-400 hover:text-white hover:bg-slate-800"
+          >
+            <ChevronUp className="w-3.5 h-3.5" />
+          </button>
           <div className="flex flex-wrap items-center gap-2 text-xs text-slate-300">
             <span className="font-semibold text-slate-100">
               Baie SFR (Câble 24FO)
@@ -683,6 +765,8 @@ export default function App() {
               RX {activeOpticalBudget.rxPowerDbm.toFixed(2)} dBm
             </span>
           </div>
+          </>
+          )}
 
           {/* 3D Connected Port Quick-Disconnect Card (When user clicks an occupied port in 3D) */}
           {inspectedPort3D && (() => {
@@ -809,6 +893,8 @@ export default function App() {
           )}
         </div>
 
+        )}
+
         {/* =================================================================== */}
         {/* UNIFIED COLLAPSIBLE BOTTOM CONTROL DOCK                             */}
         {/* =================================================================== */}
@@ -826,7 +912,7 @@ export default function App() {
                 {dockCollapsed ? (
                   <>
                     <ChevronUp className="w-3.5 h-3.5 text-amber-400" />
-                    <span>Afficher le Dock de Contrôle 3D (Touche H)</span>
+                    <span>Afficher le Dock de Contrôle 3D (H) · Tout réafficher (I)</span>
                   </>
                 ) : (
                   <>
@@ -987,6 +1073,15 @@ export default function App() {
                   >
                     <Sliders className="w-3.5 h-3.5 text-amber-400" />
                     Attributs
+                  </button>
+
+                  <button
+                    onClick={toggleImmersive}
+                    title="Masquer ou réafficher tous les panneaux (touche I)"
+                    className="px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5"
+                  >
+                    <Maximize2 className="w-3.5 h-3.5 text-sky-400" />
+                    Mode immersif (I)
                   </button>
                 </div>
               </div>

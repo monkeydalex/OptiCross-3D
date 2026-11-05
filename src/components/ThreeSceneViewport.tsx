@@ -40,6 +40,10 @@ interface ThreeSceneViewportProps {
   onPortClickForPatching: (equipmentId: string, portId: string) => void;
   isPatchingMode: boolean;
   rackFocusRequest?: RackFocusRequest | null;
+  showLegend: boolean;
+  onSetShowLegend: (open: boolean) => void;
+  showNavPanel: boolean;
+  onSetShowNavPanel: (open: boolean) => void;
 }
 
 interface HoverTooltip {
@@ -171,13 +175,16 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
   onPortClickForPatching,
   isPatchingMode,
   rackFocusRequest,
+  showLegend,
+  onSetShowLegend,
+  showNavPanel,
+  onSetShowNavPanel,
 }) => {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const [hoverTooltip, setHoverTooltip] = useState<HoverTooltip | null>(null);
   const [webglLost, setWebglLost] = useState(false);
   const [mouseLeftMode, setMouseLeftMode] = useState<'orbit' | 'pan'>('orbit');
   const [viewSide, setViewSide] = useState<'front' | 'rear'>('front');
-  const [navPanelOpen, setNavPanelOpen] = useState(true);
   const pressedKeysRef = useRef<Set<string>>(new Set());
 
   const stateRef = useRef({
@@ -1864,9 +1871,34 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
       )}
 
       {/* Visual Legend differentiating Jarretière (Baie Avant) vs Câble Rocade (Baie Arrière) in Top-Right corner */}
+      {!showLegend && (
+        <button
+          onClick={() => onSetShowLegend(true)}
+          title="Afficher la légende (touche L)"
+          className="pointer-events-auto absolute top-4 right-6 z-20 hidden md:flex items-center gap-1.5 px-3 py-1.5 bg-slate-900/95 border border-slate-700 rounded-lg shadow-xl text-xs font-semibold text-slate-200 hover:text-white"
+        >
+          <span className="flex gap-0.5">
+            <span className="w-2 h-2 rounded-full bg-sky-500" />
+            <span className="w-2 h-2 rounded-full bg-amber-400" />
+            <span className="w-2 h-2 rounded-full bg-emerald-500" />
+          </span>
+          Légende
+        </button>
+      )}
+      {showLegend && (
       <div className="pointer-events-auto absolute top-4 right-6 z-20 hidden md:block bg-slate-900/95 border border-slate-800 rounded-xl px-4 py-3 shadow-xl max-w-xs space-y-2">
-        <div className="text-xs font-bold text-slate-100">
-          Baie Avant vs Baie Arrière (Dalles 60×60 cm)
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-bold text-slate-100">
+            Baie Avant vs Baie Arrière (Dalles 60×60 cm)
+          </span>
+          <button
+            onClick={() => onSetShowLegend(false)}
+            title="Masquer la légende (touche L)"
+            aria-label="Masquer la légende"
+            className="w-5 h-5 shrink-0 flex items-center justify-center rounded text-slate-400 hover:text-white hover:bg-slate-800"
+          >
+            ✕
+          </button>
         </div>
         <div className="space-y-1.5 text-[11px]">
           <div className="flex items-start gap-2">
@@ -1915,20 +1947,21 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
           </div>
         </div>
       </div>
+      )}
 
       {/* ===================================================================== */}
       {/* FLOATING 3D NAVIGATION CONTROLLER (D-PAD + AVANT/ARRIÈRE + ORBIT/PAN) */}
       {/* ===================================================================== */}
-      {!navPanelOpen && (
+      {!showNavPanel && (
         <button
-          onClick={() => setNavPanelOpen(true)}
+          onClick={() => onSetShowNavPanel(true)}
           className="pointer-events-auto absolute bottom-56 right-6 z-20 hidden md:flex items-center gap-1.5 px-3 py-1.5 bg-slate-900/95 border border-slate-700 rounded-lg shadow-xl text-xs font-semibold text-slate-200 hover:text-white"
         >
           <span className="text-amber-400">✥</span>
           Pilotage 3D
         </button>
       )}
-      {navPanelOpen && (
+      {showNavPanel && (
       <div className="pointer-events-auto absolute bottom-56 right-6 z-20 hidden md:block bg-slate-900/95 backdrop-blur-md border border-slate-700 rounded-xl p-3 shadow-2xl w-64 space-y-2.5">
         <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-1.5">
           <span className="text-xs font-bold text-slate-100">
@@ -1938,7 +1971,7 @@ export const ThreeSceneViewport: React.FC<ThreeSceneViewportProps> = ({
             Clavier ZQSD / Flèches
           </span>
           <button
-            onClick={() => setNavPanelOpen(false)}
+            onClick={() => onSetShowNavPanel(false)}
             title="Masquer le panneau de pilotage"
             aria-label="Masquer le panneau de pilotage"
             className="w-5 h-5 flex items-center justify-center rounded text-slate-400 hover:text-white hover:bg-slate-800"
